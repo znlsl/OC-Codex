@@ -16,6 +16,7 @@ dist/
 .codex-switch/
 codex-back/
 c-o-safety-backups/
+local-repair-backups/
 
 # Local maintenance scripts
 Finalize-O-C.bat

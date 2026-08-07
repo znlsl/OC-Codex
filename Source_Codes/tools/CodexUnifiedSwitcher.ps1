@@ -31,25 +31,29 @@ function Get-HistoryBackupRootFromBackupRoot($BackupRoot) {
     return (Join-Path $BackupRoot "history-sync")
 }
 
+function Get-ChatHistoryBackupRootFromBackupRoot($BackupRoot) {
+    if ([string]::IsNullOrWhiteSpace($BackupRoot)) {
+        $BackupRoot = $Script:DefaultBackupRoot
+    }
+    return (Join-Path $BackupRoot "chat-history")
+}
+
 $Script:DefaultCodexHome = Join-Path $env:USERPROFILE ".codex"
 $Script:DefaultBackupRoot = "D:\codex-back"
 $Script:DefaultAppRoot = Join-Path $Script:DefaultBackupRoot "codex-switch"
 $Script:DefaultHistoryBackupRoot = Join-Path $Script:DefaultBackupRoot "history-sync"
+$Script:DefaultChatHistoryBackupRoot = Join-Path $Script:DefaultBackupRoot "chat-history"
 $Script:DefaultSettingsPath = Get-DefaultSettingsPath
-$Script:Title = U "\u0043\u006f\u0064\u0065\u0078 \u6a21\u5f0f\u5207\u6362\u5de5\u5177"
-$Script:UiVersion = "RefinedUiV3"
-$Script:UiShellVersion = "AcrylicSidebarUiV1"
-$Script:UiSurfaceVersion = "SolidDashboardUiV1"
-$Script:UiReferenceVersion = "SettingsPanelInspiredUiV1"
-$Script:UiCardVersion = "NetcattyCardUiV1"
-$Script:UiBackplateVersion = "AcrylicBackplateUiV1"
+$Script:RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$Script:Title = U "\u004f\u002d\u0043 \u0043\u006f\u0064\u0065\u0078 \u5de5\u5177\u7bb1"
+$Script:UiVersion = "NativeBackupUiV1"
 
 function Get-DefaultOfficialConfigPath {
     return "D:\" + [char]0x4f18 + [char]0x5316 + "\Team" + [char]0x6e90 + [char]0x6587 + [char]0x4ef6 + "\config.toml"
 }
 
 function Get-DefaultCPAMCConfigPath {
-    return "D:\" + [char]0x4f18 + [char]0x5316 + "\CPA" + [char]0x6e90 + [char]0x6587 + [char]0x4ef6 + "\config.toml"
+    return "D:\" + [char]0x4f18 + [char]0x5316 + "\" + [char]0x914d + [char]0x7f6e + [char]0x6587 + [char]0x4ef6 + "\NewAPI\newapi-config.toml"
 }
 
 function Ensure-SwitcherDirs($AppRoot = $Script:DefaultAppRoot) {
@@ -70,6 +74,9 @@ function Load-SwitcherSettings($SettingsPath = $Script:DefaultSettingsPath) {
         cpamcConfigPath = Get-DefaultCPAMCConfigPath
         codexHome = $Script:DefaultCodexHome
         backupRoot = $Script:DefaultBackupRoot
+        chatBackupDirectory = $Script:DefaultChatHistoryBackupRoot
+        chatRestoreBackupPath = ""
+        chatRestoreTargetPath = $Script:DefaultCodexHome
     }
 
     $sourcePath = $SettingsPath
@@ -81,12 +88,19 @@ function Load-SwitcherSettings($SettingsPath = $Script:DefaultSettingsPath) {
     if (Test-Path -LiteralPath $sourcePath) {
         try {
             $loaded = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
-            foreach ($name in @("officialConfigPath", "cpamcConfigPath", "codexHome", "backupRoot")) {
+            foreach ($name in @("officialConfigPath", "cpamcConfigPath", "codexHome", "backupRoot", "chatBackupDirectory", "chatRestoreBackupPath", "chatRestoreTargetPath")) {
                 if ($loaded.$name) {
                     $settings[$name] = [string]$loaded.$name
                 }
             }
         } catch {}
+    }
+
+    if ([string]::IsNullOrWhiteSpace($settings["chatBackupDirectory"])) {
+        $settings["chatBackupDirectory"] = Get-ChatHistoryBackupRootFromBackupRoot $settings["backupRoot"]
+    }
+    if ([string]::IsNullOrWhiteSpace($settings["chatRestoreTargetPath"])) {
+        $settings["chatRestoreTargetPath"] = $settings["codexHome"]
     }
 
     return [PSCustomObject]$settings
@@ -99,6 +113,12 @@ function Save-SwitcherSettings($Settings, $SettingsPath = $Script:DefaultSetting
 
 function Get-CodexProvider($CodexHome = $Script:DefaultCodexHome) {
     $configPath = Join-Path $CodexHome "config.toml"
+    return Get-CodexProviderFromConfigPath $configPath
+}
+
+function Get-CodexProviderFromConfigPath($ConfigPath) {
+    if ([string]::IsNullOrWhiteSpace($ConfigPath)) { return "missing" }
+    $configPath = $ConfigPath
     if (-not (Test-Path -LiteralPath $configPath)) { return "missing" }
 
     foreach ($line in Get-Content -LiteralPath $configPath -ErrorAction Stop) {
@@ -177,6 +197,9 @@ function Save-CurrentModeProfile(
     if ($provider -eq "CPA" -or $provider -eq "CPAMC") {
         return Save-ModeProfile -ProfileName "cpamc" -CodexHome $CodexHome -AppRoot $AppRoot
     }
+    if ($provider -ne "openai" -and $provider -ne "missing") {
+        return Save-ModeProfile -ProfileName "cpamc" -CodexHome $CodexHome -AppRoot $AppRoot
+    }
     return $null
 }
 
@@ -200,8 +223,118 @@ function Close-CodexIfRunning {
     Start-Sleep -Seconds 2
 }
 
+function Test-ExclusiveWriteAccess($Path, [switch]$AllowCreate) {
+    try {
+        $parent = Split-Path -Parent $Path
+        if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+            return [PSCustomObject]@{
+                Ok = $false
+                Reason = "Parent directory missing: $parent"
+            }
+        }
+
+        $mode = [System.IO.FileMode]::Open
+        if ($AllowCreate) {
+            $mode = [System.IO.FileMode]::OpenOrCreate
+        } elseif (-not (Test-Path -LiteralPath $Path)) {
+            return [PSCustomObject]@{
+                Ok = $false
+                Reason = "File missing: $Path"
+            }
+        }
+
+        $stream = [System.IO.File]::Open($Path, $mode, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        try {
+            return [PSCustomObject]@{
+                Ok = $true
+                Reason = $null
+            }
+        } finally {
+            $stream.Dispose()
+        }
+    } catch {
+        return [PSCustomObject]@{
+            Ok = $false
+            Reason = Get-SyncExceptionSummary $_.Exception
+        }
+    }
+}
+
+function Test-SqliteWriteAccess($CodexHome) {
+    $dbPath = Join-Path $CodexHome "state_5.sqlite"
+    if (-not (Test-Path -LiteralPath $dbPath)) {
+        return [PSCustomObject]@{
+            Ok = $false
+            Reason = "Missing SQLite state file: $dbPath"
+        }
+    }
+
+    $sqlite = Get-Command sqlite3 -ErrorAction SilentlyContinue
+    if (-not $sqlite) {
+        return [PSCustomObject]@{
+            Ok = $false
+            Reason = "sqlite3.exe not found"
+        }
+    }
+
+    try {
+        $output = & $sqlite.Source $dbPath "PRAGMA busy_timeout=1000; BEGIN IMMEDIATE; ROLLBACK;" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw (($output | Out-String).Trim())
+        }
+        return [PSCustomObject]@{
+            Ok = $true
+            Reason = $null
+        }
+    } catch {
+        return [PSCustomObject]@{
+            Ok = $false
+            Reason = Get-SyncExceptionSummary $_.Exception
+        }
+    }
+}
+
+function Assert-HistorySyncWritable($CodexHome, $TargetProvider) {
+    $issues = New-Object System.Collections.Generic.List[string]
+
+    $rolloutChanges = @(Get-RolloutProviderChanges -CodexHome $CodexHome -TargetProvider $TargetProvider)
+    foreach ($change in $rolloutChanges | Select-Object -First 5) {
+        $rolloutAccess = Test-ExclusiveWriteAccess -Path $change.Path
+        if (-not $rolloutAccess.Ok) {
+            $issues.Add("rollout locked: $($change.Path) ($($rolloutAccess.Reason))") | Out-Null
+            break
+        }
+    }
+
+    $sessionIndexPath = Join-Path $CodexHome "session_index.jsonl"
+    $sessionIndexAccess = Test-ExclusiveWriteAccess -Path $sessionIndexPath -AllowCreate
+    if (-not $sessionIndexAccess.Ok) {
+        $issues.Add("session_index unavailable: $($sessionIndexAccess.Reason)") | Out-Null
+    }
+
+    $sqliteAccess = Test-SqliteWriteAccess -CodexHome $CodexHome
+    if (-not $sqliteAccess.Ok) {
+        $issues.Add("SQLite unavailable: $($sqliteAccess.Reason)") | Out-Null
+    }
+
+    if ($issues.Count -gt 0) {
+        throw ((U "\u5207\u6362\u524d\u68c0\u67e5\u5931\u8d25\uff1a") + " " + ($issues.ToArray() -join "; "))
+    }
+}
+
 function Read-FirstLineRecord($Path) {
-    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {
+        $memory = New-Object System.IO.MemoryStream
+        try {
+            $stream.CopyTo($memory)
+            $bytes = $memory.ToArray()
+        } finally {
+            $memory.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
     $lfIndex = [Array]::IndexOf($bytes, [byte]10)
     if ($lfIndex -lt 0) {
         $lineLength = $bytes.Length
@@ -239,7 +372,13 @@ function Rewrite-FirstLine($Path, $Record, $NextFirstLine) {
     } else {
         $next = $head
     }
-    [System.IO.File]::WriteAllBytes($Path, $next)
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+    try {
+        $stream.SetLength(0)
+        $stream.Write($next, 0, $next.Length)
+    } finally {
+        $stream.Dispose()
+    }
     [System.IO.File]::SetLastWriteTimeUtc($Path, $lastWrite)
 }
 
@@ -272,13 +411,28 @@ function Get-RolloutProviderChanges($CodexHome, $TargetProvider) {
             if ([string]::IsNullOrWhiteSpace($currentProvider)) {
                 $currentProvider = "(missing)"
             }
-            if ($currentProvider -eq $TargetProvider) { continue }
+            $currentCwd = [string]$json.payload.cwd
+            $normalizedCwd = Normalize-CodexCwd $currentCwd
+            $providerNeedsUpdate = ($currentProvider -ne $TargetProvider)
+            $cwdNeedsUpdate = ($currentCwd -ne $normalizedCwd)
+            if (-not $providerNeedsUpdate -and -not $cwdNeedsUpdate) { continue }
 
-            $payloadProperties = @($json.payload.PSObject.Properties.Name)
-            if ($payloadProperties -contains "model_provider") {
-                $json.payload.model_provider = $TargetProvider
-            } else {
-                Add-Member -InputObject $json.payload -NotePropertyName "model_provider" -NotePropertyValue $TargetProvider -Force
+            if ($providerNeedsUpdate) {
+                $payloadProperties = @($json.payload.PSObject.Properties.Name)
+                if ($payloadProperties -contains "model_provider") {
+                    $json.payload.model_provider = $TargetProvider
+                } else {
+                    Add-Member -InputObject $json.payload -NotePropertyName "model_provider" -NotePropertyValue $TargetProvider -Force
+                }
+            }
+
+            if ($cwdNeedsUpdate) {
+                $payloadProperties = @($json.payload.PSObject.Properties.Name)
+                if ($payloadProperties -contains "cwd") {
+                    $json.payload.cwd = $normalizedCwd
+                } else {
+                    Add-Member -InputObject $json.payload -NotePropertyName "cwd" -NotePropertyValue $normalizedCwd -Force
+                }
             }
 
             $changes.Add([PSCustomObject]@{
@@ -293,6 +447,553 @@ function Get-RolloutProviderChanges($CodexHome, $TargetProvider) {
     return $changes.ToArray()
 }
 
+function Normalize-CodexCwd($Cwd) {
+    $value = [string]$Cwd
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $value
+    }
+    return ($value -replace '^\\\\\?\\', '')
+}
+
+function Get-FriendlyThreadNameFromCwd($Cwd, $FallbackId) {
+    $name = ""
+    if (-not [string]::IsNullOrWhiteSpace($Cwd)) {
+        $clean = Normalize-CodexCwd $Cwd
+        $clean = $clean.TrimEnd('\', '/')
+        if (-not [string]::IsNullOrWhiteSpace($clean)) {
+            $name = Split-Path -Leaf $clean
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($name)) {
+        return $FallbackId
+    }
+    return $name
+}
+
+function Get-RolloutSessionIndexEntries($CodexHome) {
+    $entries = @{}
+    foreach ($dirName in @("sessions", "archived_sessions")) {
+        $root = Join-Path $CodexHome $dirName
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+
+        foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File -Filter "rollout-*.jsonl" -ErrorAction SilentlyContinue) {
+            $record = Read-FirstLineRecord $file.FullName
+            if ([string]::IsNullOrWhiteSpace($record.FirstLine)) { continue }
+            try {
+                $json = $record.FirstLine | ConvertFrom-Json
+            } catch {
+                continue
+            }
+            if ($json.type -ne "session_meta" -or -not $json.payload -or [string]::IsNullOrWhiteSpace([string]$json.payload.id)) {
+                continue
+            }
+
+            $id = [string]$json.payload.id
+            $threadName = Get-FriendlyThreadNameFromCwd -Cwd ([string]$json.payload.cwd) -FallbackId $id
+            if (-not $entries.ContainsKey($id) -or ([datetime]$entries[$id].UpdatedAtForSort) -lt $file.LastWriteTimeUtc) {
+                $entries[$id] = [PSCustomObject]@{
+                    id = $id
+                    thread_name = $threadName
+                    updated_at = $file.LastWriteTimeUtc.ToString("o")
+                    UpdatedAtForSort = $file.LastWriteTimeUtc
+                }
+            }
+        }
+    }
+    return $entries
+}
+
+function Test-SessionIndexThreadNameNeedsRepair($ThreadName) {
+    $name = [string]$ThreadName
+    if ([string]::IsNullOrWhiteSpace($name)) { return $true }
+    if ($name.Length -gt 120) { return $true }
+    if ($name -match "[\r\n]") { return $true }
+    if ($name -match '^\?{3,}$') { return $true }
+    return $false
+}
+
+function Get-MojibakeMarkerCount($Text) {
+    $value = [string]$Text
+    if ([string]::IsNullOrWhiteSpace($value)) { return 0 }
+    return [regex]::Matches($value, '姣|旇|緝|妗|潰|绔|笌|鏂|宸|叿|鍥|瀹|鑱|璇|浠|鎺|墜|甯|闂|€|�|[\uE000-\uF8FF]').Count
+}
+
+function Repair-SessionIndexThreadName($ThreadName) {
+    $name = [string]$ThreadName
+    if ([string]::IsNullOrWhiteSpace($name)) { return $name }
+
+    $hasStrongMarker = ($name -match '[\uE000-\uF8FF]') -or $name.Contains([string][char]0xFFFD) -or $name.Contains("€")
+    if (-not $hasStrongMarker -and (Get-MojibakeMarkerCount $name) -lt 2) {
+        return $name
+    }
+
+    try {
+        $gbk = [System.Text.Encoding]::GetEncoding(936)
+        $candidate = [System.Text.Encoding]::UTF8.GetString($gbk.GetBytes($name))
+    } catch {
+        return $name
+    }
+
+    if ([string]::IsNullOrWhiteSpace($candidate) -or $candidate -eq $name) { return $name }
+    if ($candidate.Contains([string][char]0xFFFD) -or $candidate -match '[\uE000-\uF8FF]') { return $name }
+    if ($candidate -match '[\x00-\x08\x0B\x0C\x0E-\x1F]') { return $name }
+    return $candidate
+}
+
+function Select-NewestSessionIndexTimestamp($Existing, $Sqlite, $Rollout) {
+    $bestText = $null
+    $bestDate = $null
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+
+    foreach ($candidate in @($Existing, $Sqlite, $Rollout)) {
+        $text = [string]$candidate
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        try {
+            $parsed = [DateTimeOffset]::Parse($text, $culture, $styles)
+            if (-not $bestDate -or $parsed -gt $bestDate) {
+                $bestDate = $parsed
+                $bestText = $text
+            }
+        } catch {
+            if (-not $bestText) {
+                $bestText = $text
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($bestText)) {
+        return (Get-Date).ToUniversalTime().ToString("o")
+    }
+    return $bestText
+}
+
+function Convert-UnixSecondsToIso($Value) {
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text) -or $text -notmatch '^\d+$') {
+        return $null
+    }
+
+    try {
+        return ([DateTimeOffset]::FromUnixTimeSeconds([int64]$text)).UtcDateTime.ToString("o")
+    } catch {
+        return $null
+    }
+}
+
+function Convert-DateToUnixSeconds($Value, $Fallback) {
+    $text = [string]$Value
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            return [DateTimeOffset]::Parse($text).ToUnixTimeSeconds()
+        }
+    } catch {}
+    return ([DateTimeOffset]$Fallback).ToUnixTimeSeconds()
+}
+
+function Convert-DateToUnixMilliseconds($Value, $Fallback) {
+    $text = [string]$Value
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            return [DateTimeOffset]::Parse($text).ToUnixTimeMilliseconds()
+        }
+    } catch {}
+    return ([DateTimeOffset]$Fallback).ToUnixTimeMilliseconds()
+}
+
+function ConvertTo-SqlLiteral($Value) {
+    if ($null -eq $Value) { return "NULL" }
+    return "'" + ([string]$Value).Replace("'", "''") + "'"
+}
+
+function Get-FirstUserTextFromRollout($Path) {
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction SilentlyContinue) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $json = $line | ConvertFrom-Json
+        } catch {
+            continue
+        }
+        if ($json.type -ne "response_item" -or -not $json.payload -or $json.payload.role -ne "user") {
+            continue
+        }
+
+        $parts = New-Object System.Collections.Generic.List[string]
+        foreach ($item in @($json.payload.content)) {
+            if ($item.type -eq "input_text" -and -not [string]::IsNullOrWhiteSpace([string]$item.text)) {
+                $parts.Add([string]$item.text) | Out-Null
+            }
+        }
+        $text = (($parts.ToArray() -join "`n").Trim())
+        if ([string]::IsNullOrWhiteSpace($text) -or $text -match '<environment_context>') {
+            continue
+        }
+
+        $requestMarker = "## My request for Codex:"
+        $markerIndex = $text.IndexOf($requestMarker, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($markerIndex -ge 0) {
+            $text = $text.Substring($markerIndex + $requestMarker.Length).Trim()
+        }
+        $text = ($text -replace '<image[\s\S]*$', '').Trim()
+        if ($text.Length -gt 400) {
+            $text = $text.Substring(0, 400).Trim()
+        }
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            return $text
+        }
+    }
+    return $null
+}
+
+function Get-RolloutThreadBackfillEntries($CodexHome) {
+    $entries = @{}
+    foreach ($dirName in @("sessions", "archived_sessions")) {
+        $root = Join-Path $CodexHome $dirName
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+
+        foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File -Filter "rollout-*.jsonl" -ErrorAction SilentlyContinue) {
+            $record = Read-FirstLineRecord $file.FullName
+            if ([string]::IsNullOrWhiteSpace($record.FirstLine)) { continue }
+            try {
+                $json = $record.FirstLine | ConvertFrom-Json
+            } catch {
+                continue
+            }
+            if ($json.type -ne "session_meta" -or -not $json.payload -or [string]::IsNullOrWhiteSpace([string]$json.payload.id)) {
+                continue
+            }
+
+            $id = [string]$json.payload.id
+            $firstUserText = Get-FirstUserTextFromRollout -Path $file.FullName
+            $fallbackTitle = Get-FriendlyThreadNameFromCwd -Cwd ([string]$json.payload.cwd) -FallbackId $id
+            $title = $(if (-not [string]::IsNullOrWhiteSpace($firstUserText)) { $firstUserText } else { $fallbackTitle })
+            $timestamp = $(if (-not [string]::IsNullOrWhiteSpace([string]$json.payload.timestamp)) { [string]$json.payload.timestamp } else { [string]$json.timestamp })
+            $fallbackTime = [DateTimeOffset]$file.LastWriteTimeUtc
+
+            if (-not $entries.ContainsKey($id) -or ([datetime]$entries[$id].UpdatedAtForSort) -lt $file.LastWriteTimeUtc) {
+                $entries[$id] = [PSCustomObject]@{
+                    Id = $id
+                    RolloutPath = $file.FullName
+                    CreatedAt = Convert-DateToUnixSeconds -Value $timestamp -Fallback $fallbackTime
+                    UpdatedAt = Convert-DateToUnixSeconds -Value $file.LastWriteTimeUtc.ToString("o") -Fallback $fallbackTime
+                    CreatedAtMs = Convert-DateToUnixMilliseconds -Value $timestamp -Fallback $fallbackTime
+                    UpdatedAtMs = Convert-DateToUnixMilliseconds -Value $file.LastWriteTimeUtc.ToString("o") -Fallback $fallbackTime
+                    Source = $(if ($json.payload.source) { [string]$json.payload.source } else { "vscode" })
+                    ModelProvider = $(if ($json.payload.model_provider) { [string]$json.payload.model_provider } else { "missing" })
+                    Cwd = Normalize-CodexCwd ([string]$json.payload.cwd)
+                    Title = $title
+                    FirstUserMessage = $(if ($firstUserText) { $firstUserText } else { "" })
+                    Preview = $(if ($firstUserText) { $firstUserText } else { "" })
+                    CliVersion = $(if ($json.payload.cli_version) { [string]$json.payload.cli_version } else { "" })
+                    Model = $(if ($json.payload.model) { [string]$json.payload.model } else { $null })
+                    ReasoningEffort = $(if ($json.payload.reasoning_effort) { [string]$json.payload.reasoning_effort } else { $null })
+                    ThreadSource = $(if ($json.payload.thread_source) { [string]$json.payload.thread_source } else { $null })
+                    UpdatedAtForSort = $file.LastWriteTimeUtc
+                }
+            }
+        }
+    }
+    return $entries
+}
+
+function Invoke-SqliteRolloutBackfill($CodexHome) {
+    $dbPath = Join-Path $CodexHome "state_5.sqlite"
+    if (-not (Test-Path -LiteralPath $dbPath)) {
+        return [PSCustomObject]@{ InsertedRows = 0; Present = $false; Warning = $null }
+    }
+
+    $sqlite = Get-Command sqlite3 -ErrorAction SilentlyContinue
+    if (-not $sqlite) {
+        return [PSCustomObject]@{
+            InsertedRows = 0
+            Present = $true
+            Warning = "sqlite3.exe not found; rollout-only sessions were not backfilled."
+        }
+    }
+
+    $schemaOutput = & $sqlite.Source $dbPath "PRAGMA table_info(threads);" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return [PSCustomObject]@{ InsertedRows = 0; Present = $true; Warning = "Could not read SQLite thread schema." }
+    }
+
+    $columns = @{}
+    foreach ($row in $schemaOutput) {
+        $parts = ([string]$row).Split("|")
+        if ($parts.Count -ge 2 -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
+            $columns[[string]$parts[1]] = $true
+        }
+    }
+    if (-not $columns.ContainsKey("id")) {
+        return [PSCustomObject]@{ InsertedRows = 0; Present = $true; Warning = "SQLite threads table has no id column." }
+    }
+
+    $entries = Get-RolloutThreadBackfillEntries -CodexHome $CodexHome
+    if ($entries.Count -eq 0) {
+        return [PSCustomObject]@{ InsertedRows = 0; Present = $true; Warning = $null }
+    }
+
+    $statements = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in $entries.Values) {
+        $insertColumns = New-Object System.Collections.Generic.List[string]
+        $insertValues = New-Object System.Collections.Generic.List[string]
+
+        $valuesByColumn = @{
+            id = ConvertTo-SqlLiteral $entry.Id
+            rollout_path = ConvertTo-SqlLiteral $entry.RolloutPath
+            created_at = [string]$entry.CreatedAt
+            updated_at = [string]$entry.UpdatedAt
+            source = ConvertTo-SqlLiteral $entry.Source
+            model_provider = ConvertTo-SqlLiteral $entry.ModelProvider
+            cwd = ConvertTo-SqlLiteral $entry.Cwd
+            title = ConvertTo-SqlLiteral $entry.Title
+            sandbox_policy = ConvertTo-SqlLiteral "danger-full-access"
+            approval_mode = ConvertTo-SqlLiteral "never"
+            tokens_used = "0"
+            has_user_event = $(if ([string]::IsNullOrWhiteSpace([string]$entry.FirstUserMessage)) { "0" } else { "1" })
+            archived = "0"
+            cli_version = ConvertTo-SqlLiteral $entry.CliVersion
+            first_user_message = ConvertTo-SqlLiteral $entry.FirstUserMessage
+            memory_mode = ConvertTo-SqlLiteral "enabled"
+            model = ConvertTo-SqlLiteral $entry.Model
+            reasoning_effort = ConvertTo-SqlLiteral $entry.ReasoningEffort
+            created_at_ms = [string]$entry.CreatedAtMs
+            updated_at_ms = [string]$entry.UpdatedAtMs
+            thread_source = ConvertTo-SqlLiteral $entry.ThreadSource
+            preview = ConvertTo-SqlLiteral $entry.Preview
+        }
+
+        foreach ($name in $valuesByColumn.Keys) {
+            if ($columns.ContainsKey($name)) {
+                $insertColumns.Add($name) | Out-Null
+                $insertValues.Add([string]$valuesByColumn[$name]) | Out-Null
+            }
+        }
+        $statements.Add("INSERT OR IGNORE INTO threads (" + ($insertColumns.ToArray() -join ", ") + ") VALUES (" + ($insertValues.ToArray() -join ", ") + ");") | Out-Null
+    }
+
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-rollout-backfill-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    $queryFile = Join-Path $tempDir "rollout-backfill.sql"
+    try {
+        $sql = "PRAGMA busy_timeout=5000;`nBEGIN IMMEDIATE;`n" + ($statements.ToArray() -join "`n") + "`nSELECT total_changes();`nCOMMIT;`n"
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($queryFile, $sql, $utf8NoBom)
+
+        $readScriptPath = $queryFile.Replace('\', '/')
+        $output = & $sqlite.Source $dbPath ".read $readScriptPath" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw (($output | Out-String).Trim())
+        }
+    } finally {
+        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $inserted = 0
+    foreach ($line in $output) {
+        $text = [string]$line
+        if ($text -match '^\d+$') {
+            $inserted = [int]$text
+        }
+    }
+    return [PSCustomObject]@{ InsertedRows = $inserted; Present = $true; Warning = $null }
+}
+
+function Get-SqliteThreadIndexMetadata($CodexHome) {
+    $metadata = @{}
+    $dbPath = Join-Path $CodexHome "state_5.sqlite"
+    if (-not (Test-Path -LiteralPath $dbPath)) { return $metadata }
+
+    $sqlite = Get-Command sqlite3 -ErrorAction SilentlyContinue
+    if (-not $sqlite) { return $metadata }
+
+    $readDbPath = $dbPath
+    $tempDir = $null
+    try {
+        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-state-read-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        $readDbPath = Join-Path $tempDir "state_5.sqlite"
+        Copy-Item -LiteralPath $dbPath -Destination $readDbPath -Force
+        foreach ($suffix in @("-wal", "-shm")) {
+            $sidecar = "$dbPath$suffix"
+            if (Test-Path -LiteralPath $sidecar) {
+                Copy-Item -LiteralPath $sidecar -Destination "$readDbPath$suffix" -Force
+            }
+        }
+    } catch {
+        $readDbPath = $dbPath
+    }
+
+    $columns = @{}
+    $schemaOutput = & $sqlite.Source $readDbPath "PRAGMA table_info(threads);" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        if ($tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+        return $metadata
+    }
+    foreach ($row in $schemaOutput) {
+        $parts = ([string]$row).Split("|")
+        if ($parts.Count -ge 2 -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
+            $columns[[string]$parts[1]] = $true
+        }
+    }
+
+    $delimiter = "|~codex-index~|"
+    $titleExpr = "''"
+    if ($columns.ContainsKey("title")) { $titleExpr = "COALESCE(title, '')" }
+    $updatedAtExpr = "''"
+    if ($columns.ContainsKey("updated_at")) { $updatedAtExpr = "COALESCE(CAST(updated_at AS TEXT), '')" }
+    $cwdExpr = "''"
+    if ($columns.ContainsKey("cwd")) { $cwdExpr = "COALESCE(cwd, '')" }
+
+    $sql = @"
+SELECT id || '$delimiter' || $titleExpr || '$delimiter' || $updatedAtExpr || '$delimiter' || $cwdExpr
+FROM threads
+WHERE COALESCE(id, '') <> '';
+"@
+
+    $dataFile = Join-Path $tempDir "thread-index-metadata.txt"
+    $queryFile = Join-Path $tempDir "thread-index-query.sql"
+    $queryScript = ".output $($dataFile.Replace('\', '/'))`n$sql`n.output stdout`n"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($queryFile, $queryScript, $utf8NoBom)
+
+    $readScriptPath = $queryFile.Replace('\', '/')
+    & $sqlite.Source $readDbPath ".read $readScriptPath" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $dataFile)) {
+        if ($tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+        return $metadata
+    }
+
+    foreach ($line in [System.IO.File]::ReadLines($dataFile, [System.Text.Encoding]::UTF8)) {
+        $parts = ([string]$line).Split([string[]]@($delimiter), [System.StringSplitOptions]::None)
+        if ($parts.Count -lt 4 -or [string]::IsNullOrWhiteSpace($parts[0])) { continue }
+
+        $title = [string]$parts[1]
+        $updatedAt = Convert-UnixSecondsToIso $parts[2]
+        $cwd = [string]$parts[3]
+
+        $metadata[[string]$parts[0]] = [PSCustomObject]@{
+            Title = $title
+            UpdatedAt = $updatedAt
+            Cwd = Normalize-CodexCwd $cwd
+        }
+    }
+
+    if ($tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+    return $metadata
+}
+
+function Sync-SessionIndex($CodexHome) {
+    $indexPath = Join-Path $CodexHome "session_index.jsonl"
+    $existingRows = New-Object System.Collections.Generic.List[object]
+    $existingIds = @{}
+
+    if (Test-Path -LiteralPath $indexPath) {
+        foreach ($line in Get-Content -LiteralPath $indexPath -Encoding UTF8 -ErrorAction SilentlyContinue) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            try {
+                $json = $line | ConvertFrom-Json
+                $id = [string]$json.id
+                if ($id) {
+                    $existingRows.Add($json) | Out-Null
+                    $existingIds[$id] = $true
+                }
+            } catch {
+                continue
+            }
+        }
+    }
+
+    $rolloutEntries = Get-RolloutSessionIndexEntries -CodexHome $CodexHome
+    $sqliteEntries = Get-SqliteThreadIndexMetadata -CodexHome $CodexHome
+    $newLines = New-Object System.Collections.Generic.List[string]
+    $added = 0
+    $repaired = 0
+
+    foreach ($existing in $existingRows) {
+        $id = [string]$existing.id
+        $rollout = $null
+        if ($rolloutEntries.ContainsKey($id)) { $rollout = $rolloutEntries[$id] }
+
+        $sqliteMeta = $null
+        if ($sqliteEntries.ContainsKey($id)) { $sqliteMeta = $sqliteEntries[$id] }
+
+        $threadName = $null
+        if ($existing.thread_name) { $threadName = [string]$existing.thread_name }
+        $threadName = Repair-SessionIndexThreadName $threadName
+
+        $sqliteTitle = $null
+        if ($sqliteMeta -and -not [string]::IsNullOrWhiteSpace([string]$sqliteMeta.Title)) {
+            $sqliteTitle = Repair-SessionIndexThreadName ([string]$sqliteMeta.Title)
+        }
+
+        if ((Test-SessionIndexThreadNameNeedsRepair $threadName) -and $sqliteTitle -and -not (Test-SessionIndexThreadNameNeedsRepair $sqliteTitle)) {
+            $threadName = $sqliteTitle
+        } elseif ((Test-SessionIndexThreadNameNeedsRepair $threadName) -and $rollout) {
+            $threadName = Repair-SessionIndexThreadName ([string]$rollout.thread_name)
+        } elseif (Test-SessionIndexThreadNameNeedsRepair $threadName) {
+            $threadName = $id
+        }
+
+        $updatedAt = Select-NewestSessionIndexTimestamp `
+            -Existing ([string]$existing.updated_at) `
+            -Sqlite ($(if ($sqliteMeta) { [string]$sqliteMeta.UpdatedAt } else { $null })) `
+            -Rollout ($(if ($rollout) { [string]$rollout.updated_at } else { $null }))
+
+        $entry = [PSCustomObject]@{
+            id = $id
+            thread_name = $threadName
+            updated_at = $updatedAt
+        }
+        $line = $entry | ConvertTo-Json -Compress -Depth 10
+        $newLines.Add($line) | Out-Null
+
+        $oldLine = ([PSCustomObject]@{
+            id = [string]$existing.id
+            thread_name = [string]$existing.thread_name
+            updated_at = [string]$existing.updated_at
+        } | ConvertTo-Json -Compress -Depth 10)
+        if ($oldLine -ne $line) { $repaired++ }
+    }
+
+    foreach ($id in $sqliteEntries.Keys) {
+        if ($existingIds.ContainsKey($id)) { continue }
+        $sqliteMeta = $sqliteEntries[$id]
+        $rollout = $null
+        if ($rolloutEntries.ContainsKey($id)) { $rollout = $rolloutEntries[$id] }
+        $threadName = Repair-SessionIndexThreadName ([string]$sqliteMeta.Title)
+        if ((Test-SessionIndexThreadNameNeedsRepair $threadName) -and $rollout) {
+            $threadName = Repair-SessionIndexThreadName ([string]$rollout.thread_name)
+        }
+        if (Test-SessionIndexThreadNameNeedsRepair $threadName) {
+            $threadName = $id
+        }
+        $updatedAt = Select-NewestSessionIndexTimestamp `
+            -Existing $null `
+            -Sqlite ([string]$sqliteMeta.UpdatedAt) `
+            -Rollout ($(if ($rollout) { [string]$rollout.updated_at } else { $null }))
+
+        $entry = [PSCustomObject]@{
+            id = $id
+            thread_name = $threadName
+            updated_at = $updatedAt
+        }
+        $newLines.Add(($entry | ConvertTo-Json -Compress -Depth 10)) | Out-Null
+        $added++
+    }
+
+    if ($added -gt 0 -or $repaired -gt 0 -or -not (Test-Path -LiteralPath $indexPath)) {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($indexPath, (($newLines.ToArray() -join [Environment]::NewLine) + [Environment]::NewLine), $utf8NoBom)
+    }
+
+    return [PSCustomObject]@{
+        AddedRows = $added
+        RepairedRows = $repaired
+        TotalRows = $newLines.Count
+        Present = Test-Path -LiteralPath $indexPath
+    }
+}
+
 function Backup-HistorySyncState(
     $CodexHome,
     $TargetProvider,
@@ -303,7 +1004,7 @@ function Backup-HistorySyncState(
     $backupRoot = Join-Path $HistoryBackupRoot "$stamp-$TargetProvider"
     New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
 
-    foreach ($name in @("config.toml", "state_5.sqlite", ".codex-global-state.json")) {
+    foreach ($name in @("config.toml", "state_5.sqlite", ".codex-global-state.json", "session_index.jsonl")) {
         $path = Join-Path $CodexHome $name
         if (Test-Path -LiteralPath $path) {
             $target = Join-Path $backupRoot $name
@@ -322,6 +1023,277 @@ function Backup-HistorySyncState(
     return $backupRoot
 }
 
+function Invoke-CodexChatHistoryRestoreRepair(
+    $CodexHome,
+    $TargetProvider = ""
+) {
+    $repairScript = Join-Path $Script:RepoRoot "Repair-Codex-Chat-History.ps1"
+    if (-not (Test-Path -LiteralPath $repairScript)) {
+        return [PSCustomObject]@{
+            Ran = $false
+            Warning = "Repair script not found: $repairScript"
+        }
+    }
+
+    try {
+        $args = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $repairScript,
+            "-CodexHome", $CodexHome
+        )
+        if (-not [string]::IsNullOrWhiteSpace([string]$TargetProvider)) {
+            $args += @("-TargetProvider", [string]$TargetProvider)
+        }
+
+        $output = & powershell.exe @args 2>&1
+        $exitCode = $LASTEXITCODE
+        return [PSCustomObject]@{
+            Ran = $true
+            ExitCode = $exitCode
+            Output = @($output | ForEach-Object { [string]$_ })
+            Warning = $(if ($exitCode -ne 0) { "Repair script exited with code $exitCode." } else { $null })
+        }
+    } catch {
+        return [PSCustomObject]@{
+            Ran = $false
+            Warning = "Restore repair failed: $(Get-SyncExceptionSummary $_.Exception)"
+        }
+    }
+}
+
+function Get-CodexChatHistoryBackupItemNames {
+    return @(
+        "sessions",
+        "archived_sessions",
+        "attachments",
+        "memories",
+        "sqlite",
+        "session_index.jsonl",
+        ".codex-global-state.json",
+        "state_5.sqlite",
+        "state_5.sqlite-wal",
+        "state_5.sqlite-shm",
+        "logs_2.sqlite",
+        "logs_2.sqlite-wal",
+        "logs_2.sqlite-shm",
+        "goals_1.sqlite",
+        "goals_1.sqlite-wal",
+        "goals_1.sqlite-shm",
+        "memories_1.sqlite",
+        "memories_1.sqlite-wal",
+        "memories_1.sqlite-shm"
+    )
+}
+
+function Resolve-SafeChildPath($BasePath, $RelativeName) {
+    if ([string]::IsNullOrWhiteSpace($BasePath)) {
+        throw "Base path is required."
+    }
+    if ([string]::IsNullOrWhiteSpace($RelativeName)) {
+        throw "Relative path is required."
+    }
+    if ([System.IO.Path]::IsPathRooted($RelativeName)) {
+        throw "Refusing rooted backup entry: $RelativeName"
+    }
+
+    $baseFull = [System.IO.Path]::GetFullPath($BasePath).TrimEnd([char[]]@('\', '/'))
+    $targetFull = [System.IO.Path]::GetFullPath((Join-Path $baseFull $RelativeName))
+    $prefix = $baseFull + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $targetFull.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing backup entry outside base path: $RelativeName"
+    }
+    return $targetFull
+}
+
+function Test-PathInsideDirectory($ParentPath, $ChildPath) {
+    if ([string]::IsNullOrWhiteSpace($ParentPath) -or [string]::IsNullOrWhiteSpace($ChildPath)) {
+        return $false
+    }
+    $parentFull = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd([char[]]@('\', '/'))
+    $childFull = [System.IO.Path]::GetFullPath($ChildPath).TrimEnd([char[]]@('\', '/'))
+    $prefix = $parentFull + [System.IO.Path]::DirectorySeparatorChar
+    return $childFull.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-CodexChatHistoryBackupEntryName($Name) {
+    $allowed = @{}
+    foreach ($entryName in Get-CodexChatHistoryBackupItemNames) {
+        $allowed[$entryName] = $true
+    }
+
+    if (-not $allowed.ContainsKey([string]$Name)) {
+        throw "Unsupported chat history backup entry: $Name"
+    }
+}
+
+function Get-CodexChatHistoryBackupManifest($BackupPath) {
+    if ([string]::IsNullOrWhiteSpace($BackupPath)) {
+        throw (U "\u8bf7\u9009\u62e9\u5907\u4efd\u76ee\u5f55")
+    }
+
+    $manifestPath = Join-Path $BackupPath "manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw (U "\u8be5\u76ee\u5f55\u4e0d\u662f O-C \u804a\u5929\u8bb0\u5f55\u5907\u4efd\uff1a\u7f3a\u5c11 manifest.json")
+    }
+
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    } catch {
+        throw (U "\u5907\u4efd manifest.json \u65e0\u6cd5\u8bfb\u53d6")
+    }
+
+    if ($manifest.kind -ne "oc.codex.chatHistoryBackup" -or [int]$manifest.version -ne 1) {
+        throw (U "\u5907\u4efd\u7c7b\u578b\u4e0d\u5339\u914d\uff0c\u65e0\u6cd5\u6062\u590d")
+    }
+
+    foreach ($entry in @($manifest.entries)) {
+        Assert-CodexChatHistoryBackupEntryName ([string]$entry.name)
+        $source = Resolve-SafeChildPath -BasePath $BackupPath -RelativeName ([string]$entry.name)
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "Backup entry missing: $($entry.name)"
+        }
+    }
+
+    return $manifest
+}
+
+function New-CodexChatHistoryBackup(
+    $CodexHome = $Script:DefaultCodexHome,
+    $BackupRoot = $Script:DefaultBackupRoot,
+    $BackupDirectory = $null,
+    $Stamp = $null,
+    $Label = "codex-chat-history"
+) {
+    if ([string]::IsNullOrWhiteSpace($CodexHome) -or -not (Test-Path -LiteralPath $CodexHome)) {
+        throw ((U "\u627e\u4e0d\u5230 Codex \u6570\u636e\u76ee\u5f55\uff1a") + "`n$CodexHome")
+    }
+    if ([string]::IsNullOrWhiteSpace($BackupRoot)) {
+        $BackupRoot = $Script:DefaultBackupRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($Stamp)) {
+        $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    }
+    if ([string]::IsNullOrWhiteSpace($Label)) {
+        $Label = "codex-chat-history"
+    }
+
+    $chatBackupRoot = $BackupDirectory
+    if ([string]::IsNullOrWhiteSpace($chatBackupRoot)) {
+        $chatBackupRoot = Get-ChatHistoryBackupRootFromBackupRoot $BackupRoot
+    }
+    New-Item -ItemType Directory -Path $chatBackupRoot -Force | Out-Null
+
+    $backupDir = Join-Path $chatBackupRoot "$Stamp-$Label"
+    if (Test-Path -LiteralPath $backupDir) {
+        throw "Backup directory already exists: $backupDir"
+    }
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($name in Get-CodexChatHistoryBackupItemNames) {
+        $source = Resolve-SafeChildPath -BasePath $CodexHome -RelativeName $name
+        if (-not (Test-Path -LiteralPath $source)) {
+            continue
+        }
+
+        $target = Resolve-SafeChildPath -BasePath $backupDir -RelativeName $name
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
+
+        $sourceItem = Get-Item -LiteralPath $source -Force
+        $entries.Add([PSCustomObject]@{
+            name = $name
+            type = $(if ($sourceItem.PSIsContainer) { "directory" } else { "file" })
+        }) | Out-Null
+    }
+
+    $manifest = [ordered]@{
+        kind = "oc.codex.chatHistoryBackup"
+        version = 1
+        created_at = (Get-Date).ToUniversalTime().ToString("o")
+        source_codex_home = $CodexHome
+        entries = @($entries.ToArray())
+    }
+    $manifestPath = Join-Path $backupDir "manifest.json"
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
+    return [PSCustomObject]@{
+        BackupDir = $backupDir
+        ManifestPath = $manifestPath
+        CopiedItems = $entries.Count
+    }
+}
+
+function Restore-CodexChatHistoryBackup(
+    $BackupPath,
+    $CodexHome = $Script:DefaultCodexHome,
+    $BackupRoot = $Script:DefaultBackupRoot,
+    $Stamp = $null,
+    [switch]$SkipProcessCheck
+) {
+    if (-not $SkipProcessCheck) {
+        Close-CodexIfRunning
+    }
+    if ([string]::IsNullOrWhiteSpace($CodexHome)) {
+        $CodexHome = $Script:DefaultCodexHome
+    }
+    if ([string]::IsNullOrWhiteSpace($BackupRoot)) {
+        $BackupRoot = $Script:DefaultBackupRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($Stamp)) {
+        $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    }
+
+    $manifest = Get-CodexChatHistoryBackupManifest -BackupPath $BackupPath
+    if (Test-PathInsideDirectory -ParentPath $CodexHome -ChildPath $BackupPath) {
+        throw (U "\u4e0d\u80fd\u4ece Codex \u6570\u636e\u76ee\u5f55\u5185\u90e8\u6062\u590d\u5907\u4efd")
+    }
+
+    $safetyBackupDir = $null
+    if (Test-Path -LiteralPath $CodexHome) {
+        $safety = New-CodexChatHistoryBackup -CodexHome $CodexHome -BackupRoot $BackupRoot -Stamp $Stamp -Label "before-chat-restore"
+        $safetyBackupDir = $safety.BackupDir
+    } else {
+        New-Item -ItemType Directory -Path $CodexHome -Force | Out-Null
+    }
+
+    $restored = 0
+    foreach ($entry in @($manifest.entries)) {
+        $name = [string]$entry.name
+        Assert-CodexChatHistoryBackupEntryName $name
+
+        $source = Resolve-SafeChildPath -BasePath $BackupPath -RelativeName $name
+        $target = Resolve-SafeChildPath -BasePath $CodexHome -RelativeName $name
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "Backup entry missing: $name"
+        }
+
+        if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force
+        }
+
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
+        $restored++
+    }
+
+    $targetProvider = Get-CodexProvider $CodexHome
+    if ($targetProvider -eq "missing") {
+        $targetProvider = ""
+    }
+    $repairResult = Invoke-CodexChatHistoryRestoreRepair -CodexHome $CodexHome -TargetProvider $targetProvider
+
+    return [PSCustomObject]@{
+        BackupDir = $BackupPath
+        SafetyBackupDir = $safetyBackupDir
+        RestoredItems = $restored
+        RepairRan = [bool]$repairResult.Ran
+        RepairWarning = $repairResult.Warning
+        RepairOutput = @($repairResult.Output)
+    }
+}
+
 function Invoke-SqliteProviderSync($CodexHome, $TargetProvider) {
     $dbPath = Join-Path $CodexHome "state_5.sqlite"
     if (-not (Test-Path -LiteralPath $dbPath)) {
@@ -337,8 +1309,69 @@ function Invoke-SqliteProviderSync($CodexHome, $TargetProvider) {
         }
     }
 
+    $schemaOutput = & $sqlite.Source $dbPath "PRAGMA table_info(threads);" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return [PSCustomObject]@{
+            UpdatedRows = 0
+            Present = $true
+            Warning = "Could not read SQLite thread schema."
+        }
+    }
+
+    $columns = @{}
+    foreach ($row in $schemaOutput) {
+        $parts = ([string]$row).Split("|")
+        if ($parts.Count -ge 2 -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
+            $columns[[string]$parts[1]] = $true
+        }
+    }
+
     $safeProvider = $TargetProvider.Replace("'", "''")
-    $sql = "PRAGMA busy_timeout=5000; BEGIN IMMEDIATE; UPDATE threads SET model_provider = '$safeProvider' WHERE COALESCE(model_provider, '') <> '$safeProvider'; SELECT changes(); COMMIT;"
+    $verbatimPrefix = "\\?\"
+    $safeVerbatimPrefix = $verbatimPrefix.Replace("'", "''")
+
+    $setClauses = New-Object System.Collections.Generic.List[string]
+    $whereClauses = New-Object System.Collections.Generic.List[string]
+
+    if ($columns.ContainsKey("model_provider")) {
+        $setClauses.Add(@"
+model_provider = CASE
+    WHEN COALESCE(model_provider, '') <> '$safeProvider' THEN '$safeProvider'
+    ELSE model_provider
+  END
+"@.Trim()) | Out-Null
+        $whereClauses.Add("COALESCE(model_provider, '') <> '$safeProvider'") | Out-Null
+    }
+
+    if ($columns.ContainsKey("cwd")) {
+        $setClauses.Add(@"
+cwd = CASE
+    WHEN substr(COALESCE(cwd, ''), 1, 4) = '$safeVerbatimPrefix' THEN substr(cwd, 5)
+    ELSE cwd
+  END
+"@.Trim()) | Out-Null
+        $whereClauses.Add("substr(COALESCE(cwd, ''), 1, 4) = '$safeVerbatimPrefix'") | Out-Null
+    }
+
+    if ($setClauses.Count -eq 0) {
+        return [PSCustomObject]@{
+            UpdatedRows = 0
+            Present = $true
+            Warning = "SQLite threads table has no model_provider or cwd columns."
+        }
+    }
+
+    $sql = @"
+PRAGMA busy_timeout=5000;
+BEGIN IMMEDIATE;
+UPDATE threads
+SET
+  $($setClauses.ToArray() -join ",`n  ")
+WHERE
+  $($whereClauses.ToArray() -join "`n  OR ");
+SELECT changes();
+COMMIT;
+"@
     $output = & $sqlite.Source $dbPath $sql 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw (($output | Out-String).Trim())
@@ -353,6 +1386,19 @@ function Invoke-SqliteProviderSync($CodexHome, $TargetProvider) {
     }
 
     return [PSCustomObject]@{ UpdatedRows = $updated; Present = $true; Warning = $null }
+}
+
+function Get-SyncExceptionSummary($Exception) {
+    $message = [string]$Exception.Message
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        return "unknown error"
+    }
+
+    $line = (($message -split "(`r`n|`n|`r)") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($line)) {
+        return "unknown error"
+    }
+    return $line.Trim()
 }
 
 function Invoke-HistoryProviderSync(
@@ -372,17 +1418,57 @@ function Invoke-HistoryProviderSync(
 
     $changes = @(Get-RolloutProviderChanges -CodexHome $CodexHome -TargetProvider $TargetProvider)
     $backupDir = Backup-HistorySyncState -CodexHome $CodexHome -TargetProvider $TargetProvider -Changes $changes -HistoryBackupRoot $HistoryBackupRoot
+    $failedRollouts = New-Object System.Collections.Generic.List[object]
     foreach ($change in $changes) {
-        Rewrite-FirstLine -Path $change.Path -Record $change.Record -NextFirstLine $change.UpdatedFirstLine
+        try {
+            Rewrite-FirstLine -Path $change.Path -Record $change.Record -NextFirstLine $change.UpdatedFirstLine
+        } catch {
+            $failedRollouts.Add([PSCustomObject]@{
+                Path = $change.Path
+                Error = $_.Exception.Message
+            }) | Out-Null
+        }
     }
 
-    $sqliteResult = Invoke-SqliteProviderSync -CodexHome $CodexHome -TargetProvider $TargetProvider
+    $warnings = New-Object System.Collections.Generic.List[string]
+    if ($failedRollouts.Count -gt 0) {
+        $warnings.Add("Failed to rewrite $($failedRollouts.Count) locked rollout file(s). Close Codex and run sync again.") | Out-Null
+    }
+
+    $backfillResult = [PSCustomObject]@{ InsertedRows = 0; Present = $false; Warning = $null }
+    try {
+        $backfillResult = Invoke-SqliteRolloutBackfill -CodexHome $CodexHome
+        if ($backfillResult.Warning) { $warnings.Add([string]$backfillResult.Warning) | Out-Null }
+    } catch {
+        $warnings.Add("SQLite rollout backfill failed: $(Get-SyncExceptionSummary $_.Exception)") | Out-Null
+    }
+
+    $sqliteResult = [PSCustomObject]@{ UpdatedRows = 0; Present = $false; Warning = $null }
+    try {
+        $sqliteResult = Invoke-SqliteProviderSync -CodexHome $CodexHome -TargetProvider $TargetProvider
+        if ($sqliteResult.Warning) { $warnings.Add([string]$sqliteResult.Warning) | Out-Null }
+    } catch {
+        $warnings.Add("SQLite provider sync failed: $(Get-SyncExceptionSummary $_.Exception)") | Out-Null
+    }
+
+    $sessionIndexResult = [PSCustomObject]@{ AddedRows = 0; RepairedRows = 0; TotalRows = 0; Present = $false }
+    try {
+        $sessionIndexResult = Sync-SessionIndex -CodexHome $CodexHome
+    } catch {
+        $warnings.Add("Session index sync failed: $(Get-SyncExceptionSummary $_.Exception)") | Out-Null
+    }
+
     return [PSCustomObject]@{
         TargetProvider = $TargetProvider
         BackupDir = $backupDir
-        ChangedRollouts = $changes.Count
+        ChangedRollouts = ($changes.Count - $failedRollouts.Count)
+        FailedRollouts = $failedRollouts.Count
+        FailedRolloutPaths = @($failedRollouts | ForEach-Object { $_.Path })
+        SqliteRowsBackfilled = $backfillResult.InsertedRows
         SqliteRowsUpdated = $sqliteResult.UpdatedRows
-        Warning = $sqliteResult.Warning
+        SessionIndexAdded = $sessionIndexResult.AddedRows
+        SessionIndexRepaired = $sessionIndexResult.RepairedRows
+        Warning = ($(if ($warnings.Count -gt 0) { $warnings.ToArray() -join " " } else { $null }))
     }
 }
 
@@ -392,6 +1478,39 @@ function Copy-ConfigToCodex($SourcePath, $CodexHome) {
     }
     New-Item -ItemType Directory -Path $CodexHome -Force | Out-Null
     Copy-Item -LiteralPath $SourcePath -Destination (Join-Path $CodexHome "config.toml") -Force
+}
+
+function Get-CodexApiKeyFromConfig($ConfigPath) {
+    if (-not (Test-Path -LiteralPath $ConfigPath)) { return $null }
+    foreach ($line in Get-Content -LiteralPath $ConfigPath -Encoding UTF8 -ErrorAction Stop) {
+        $match = [regex]::Match($line, '^\s*api_key\s*=\s*"([^"]+)"\s*$')
+        if ($match.Success) {
+            return $match.Groups[1].Value
+        }
+    }
+    return $null
+}
+
+function Write-ApiAuthFromConfig($ConfigPath, $CodexHome, $ProfilePath = $null) {
+    $apiKey = Get-CodexApiKeyFromConfig -ConfigPath $ConfigPath
+    if ([string]::IsNullOrWhiteSpace($apiKey)) { return $null }
+
+    $auth = [ordered]@{
+        OPENAI_API_KEY = $apiKey
+        auth_mode = "apikey"
+    }
+    $json = $auth | ConvertTo-Json -Compress
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    $authPath = Join-Path $CodexHome "auth.json"
+    [System.IO.File]::WriteAllText($authPath, $json, $utf8NoBom)
+
+    if (-not [string]::IsNullOrWhiteSpace($ProfilePath)) {
+        New-Item -ItemType Directory -Path $ProfilePath -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $ProfilePath "auth.json"), $json, $utf8NoBom)
+    }
+
+    return $authPath
 }
 
 function Move-ApiAuthForOAuth($CodexHome, $CurrentProvider, $AuthMode) {
@@ -420,6 +1539,31 @@ function Move-OAuthAuthForCPAMC($CodexHome, $CurrentProvider, $AuthMode) {
     return $target
 }
 
+function Move-CockpitAuthForOAuth($CodexHome) {
+    $cockpitAuthPath = Join-Path $CodexHome ".cockpit_codex_auth.json"
+    if (-not (Test-Path -LiteralPath $cockpitAuthPath)) { return $null }
+
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $target = Join-Path $CodexHome ".cockpit_codex_auth.json.disabled-before-oauth-$stamp"
+    Move-Item -LiteralPath $cockpitAuthPath -Destination $target -Force
+    return $target
+}
+
+function Restore-CockpitAuthForCPAMC($CodexHome) {
+    $cockpitAuthPath = Join-Path $CodexHome ".cockpit_codex_auth.json"
+    if (Test-Path -LiteralPath $cockpitAuthPath) {
+        return $cockpitAuthPath
+    }
+
+    $backup = Get-ChildItem -LiteralPath $CodexHome -Filter ".cockpit_codex_auth.json.disabled-before-oauth-*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    if (-not $backup) { return $null }
+
+    Move-Item -LiteralPath $backup.FullName -Destination $cockpitAuthPath -Force
+    return $cockpitAuthPath
+}
+
 function Switch-CodexProfileMode(
     [ValidateSet("OAuth", "CPAMC")] $Target,
     $CodexHome = $Script:DefaultCodexHome,
@@ -436,30 +1580,35 @@ function Switch-CodexProfileMode(
 
     $currentProvider = Get-CodexProvider $CodexHome
     $authMode = Get-CodexAuthMode $CodexHome
+    $targetProvider = if ($Target -eq "CPAMC") {
+        Get-CodexProviderFromConfigPath $CPAMCConfigPath
+    } else {
+        "openai"
+    }
+    if ($Target -eq "CPAMC" -and ([string]::IsNullOrWhiteSpace($targetProvider) -or $targetProvider -eq "missing")) {
+        throw ((U "\u65e0\u6cd5\u8bc6\u522b API \u914d\u7f6e\u7684 model_provider\uff1a") + "`n$CPAMCConfigPath")
+    }
+    Assert-HistorySyncWritable -CodexHome $CodexHome -TargetProvider $currentProvider
+    Assert-HistorySyncWritable -CodexHome $CodexHome -TargetProvider $targetProvider
     $preSync = Invoke-HistoryProviderSync -TargetProvider $currentProvider -CodexHome $CodexHome -HistoryBackupRoot $HistoryBackupRoot
     $savedProfile = Save-CurrentModeProfile -CodexHome $CodexHome -AppRoot $AppRoot
     $authBackup = Backup-ActiveAuthConfig -CodexHome $CodexHome -AppRoot $AppRoot
     $movedAuth = $null
-    $targetProvider = $null
 
     if ($Target -eq "CPAMC") {
         $cpamcProfile = Join-Path $AppRoot "profiles\cpamc"
-        $cpamcAuth = Join-Path $cpamcProfile "auth.json"
+        Restore-CockpitAuthForCPAMC -CodexHome $CodexHome | Out-Null
         Copy-ConfigToCodex -SourcePath $CPAMCConfigPath -CodexHome $CodexHome
-        if (Test-Path -LiteralPath $cpamcAuth) {
-            Copy-Item -LiteralPath $cpamcAuth -Destination (Join-Path $CodexHome "auth.json") -Force
-        } else {
-            $movedAuth = Move-OAuthAuthForCPAMC -CodexHome $CodexHome -CurrentProvider $currentProvider -AuthMode $authMode
-        }
-        $targetProvider = "CPA"
+        $movedAuth = Move-OAuthAuthForCPAMC -CodexHome $CodexHome -CurrentProvider $currentProvider -AuthMode $authMode
+        Write-ApiAuthFromConfig -ConfigPath $CPAMCConfigPath -CodexHome $CodexHome -ProfilePath $cpamcProfile | Out-Null
     } else {
+        Move-CockpitAuthForOAuth -CodexHome $CodexHome | Out-Null
         $movedAuth = Move-ApiAuthForOAuth -CodexHome $CodexHome -CurrentProvider $currentProvider -AuthMode $authMode
         Copy-ConfigToCodex -SourcePath $OfficialConfigPath -CodexHome $CodexHome
         $officialAuth = Join-Path $AppRoot "profiles\official\auth.json"
         if (Test-Path -LiteralPath $officialAuth) {
             Copy-Item -LiteralPath $officialAuth -Destination (Join-Path $CodexHome "auth.json") -Force
         }
-        $targetProvider = "openai"
     }
 
     $postSync = Invoke-HistoryProviderSync -TargetProvider $targetProvider -CodexHome $CodexHome -HistoryBackupRoot $HistoryBackupRoot
@@ -494,12 +1643,30 @@ function Format-SwitchResult($Result) {
     return ($lines -join [Environment]::NewLine)
 }
 
+function Format-ChatHistoryBackupResult($Result) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add((U "\u804a\u5929\u8bb0\u5f55\u5907\u4efd\u5df2\u5b8c\u6210"))
+    $lines.Add((U "\u5907\u4efd\u9879\uff1a") + " $($Result.CopiedItems)")
+    $lines.Add((U "\u4f4d\u7f6e\uff1a") + " $($Result.BackupDir)")
+    return ($lines -join [Environment]::NewLine)
+}
+
+function Format-ChatHistoryRestoreResult($Result) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add((U "\u804a\u5929\u8bb0\u5f55\u5df2\u6062\u590d"))
+    $lines.Add((U "\u6062\u590d\u9879\uff1a") + " $($Result.RestoredItems)")
+    if ($Result.SafetyBackupDir) {
+        $lines.Add((U "\u6062\u590d\u524d\u5907\u4efd\uff1a") + " $($Result.SafetyBackupDir)")
+    }
+    return ($lines -join [Environment]::NewLine)
+}
+
 function Get-FriendlyModeName($Provider) {
     if ($Provider -eq "openai" -or $Provider -eq "OAuth") {
         return "OAuth"
     }
     if ($Provider -eq "CPA" -or $Provider -eq "CPAMC") {
-        return "CPAMC"
+        return "API (CPA)"
     }
     if ([string]::IsNullOrWhiteSpace($Provider) -or $Provider -eq "missing") {
         return (U "\u672a\u8bc6\u522b")
@@ -535,797 +1702,517 @@ function Test-ToolReadiness($Settings, $AppRoot = $Script:DefaultAppRoot) {
     }
 }
 
-function Enable-GlassBackdrop($Form) {
-    try {
-        if (-not ([System.Management.Automation.PSTypeName]'DwmGlassNative').Type) {
-            Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class DwmGlassNative {
-    [DllImport("dwmapi.dll")]
-    public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+function Get-OCLogPath {
+    $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+    if ([string]::IsNullOrWhiteSpace($appData)) {
+        $appData = Join-Path $env:USERPROFILE "AppData\Roaming"
+    }
+    $logDir = Join-Path (Join-Path $appData "C-O") "logs"
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    return (Join-Path $logDir ("oc-{0}.log" -f (Get-Date -Format "yyyyMMdd")))
 }
-"@
-        }
 
-        $darkMode = 1
-        [DwmGlassNative]::DwmSetWindowAttribute($Form.Handle, 20, [ref]$darkMode, 4) | Out-Null
-        $backdrop = 3
-        [DwmGlassNative]::DwmSetWindowAttribute($Form.Handle, 38, [ref]$backdrop, 4) | Out-Null
-        $corner = 2
-        [DwmGlassNative]::DwmSetWindowAttribute($Form.Handle, 33, [ref]$corner, 4) | Out-Null
+function Write-OCLog($Message, $Exception = $null) {
+    try {
+        $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), [string]$Message
+        Add-Content -LiteralPath (Get-OCLogPath) -Value $line -Encoding UTF8
+        if ($Exception) {
+            Add-Content -LiteralPath (Get-OCLogPath) -Value ([string]$Exception) -Encoding UTF8
+        }
     } catch {}
 }
 
-function New-RoundedPath($Rectangle, $Radius) {
-    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $diameter = $Radius * 2
-    $path.AddArc($Rectangle.X, $Rectangle.Y, $diameter, $diameter, 180, 90)
-    $path.AddArc($Rectangle.Right - $diameter, $Rectangle.Y, $diameter, $diameter, 270, 90)
-    $path.AddArc($Rectangle.Right - $diameter, $Rectangle.Bottom - $diameter, $diameter, $diameter, 0, 90)
-    $path.AddArc($Rectangle.X, $Rectangle.Bottom - $diameter, $diameter, $diameter, 90, 90)
-    $path.CloseFigure()
-    return $path
+function Show-ClearMessage($Owner, $Message, [switch]$Error) {
+    $title = $(if ($Error) { U "\u64cd\u4f5c\u5931\u8d25" } else { U "\u64cd\u4f5c\u5b8c\u6210" })
+    $icon = $(if ($Error) { [System.Windows.Forms.MessageBoxIcon]::Error } else { [System.Windows.Forms.MessageBoxIcon]::Information })
+    [System.Windows.Forms.MessageBox]::Show([string]$Message, $title, [System.Windows.Forms.MessageBoxButtons]::OK, $icon) | Out-Null
 }
 
-function Set-RoundedRegion($Control, $Radius) {
-    if ($Control.Width -le 0 -or $Control.Height -le 0) { return }
-    $rect = New-Object System.Drawing.Rectangle(0, 0, $Control.Width, $Control.Height)
-    $path = New-RoundedPath $rect $Radius
-    $Control.Region = New-Object System.Drawing.Region($path)
-    $path.Dispose()
+function New-NativeSection($Parent, $Text, $Location, $Size) {
+    $group = New-Object System.Windows.Forms.GroupBox
+    $group.Text = $Text
+    $group.Location = $Location
+    $group.Size = $Size
+    $group.BackColor = [System.Drawing.Color]::White
+    $group.ForeColor = [System.Drawing.Color]::FromArgb(17, 24, 39)
+    $group.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 10, [System.Drawing.FontStyle]::Bold)
+    $Parent.Controls.Add($group)
+    return $group
 }
 
-function Add-SubtleCardBorder($Panel, $Radius = 10) {
-    $Panel.Add_Paint({
-        param($sender, $eventArgs)
-        if ($sender.Width -le 1 -or $sender.Height -le 1) { return }
-        $eventArgs.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $rect = New-Object System.Drawing.Rectangle(1, 1, ($sender.Width - 3), ($sender.Height - 3))
-        $path = New-RoundedPath $rect ([Math]::Max(1, ($Radius - 1)))
-        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(48, 70, 58), 1)
-        $eventArgs.Graphics.DrawPath($pen, $path)
-        $pen.Dispose()
-        $path.Dispose()
-    }.GetNewClosure())
-}
-
-function New-GlassPanel($Location, $Size, $Radius = 18) {
-    $panel = New-Object System.Windows.Forms.Panel
-    $panel.Location = $Location
-    $panel.Size = $Size
-    $panel.BackColor = [System.Drawing.Color]::FromArgb(22, 34, 27)
-    $panel.BorderStyle = [System.Windows.Forms.BorderStyle]::None
-    $panel.Add_HandleCreated({ Set-RoundedRegion $panel 10 })
-    $panel.Add_Resize({ Set-RoundedRegion $panel 10 })
-    Add-SubtleCardBorder $panel 10
-    return $panel
-}
-
-function New-GlassButton($Text, $Location, $Size, $Kind = "secondary") {
+function New-NativeButton($Text, $Location, $Size, [switch]$Primary) {
     $button = New-Object System.Windows.Forms.Button
     $button.Text = $Text
     $button.Location = $Location
     $button.Size = $Size
-    $button.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-    $button.FlatAppearance.BorderSize = 1
-    $button.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $button.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 10.5, [System.Drawing.FontStyle]::Bold)
-
-    if ($Kind -eq "primary") {
-        $button.BackColor = [System.Drawing.Color]::FromArgb(16, 185, 129)
-        $button.ForeColor = [System.Drawing.Color]::FromArgb(240, 253, 250)
-        $button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(52, 211, 153)
-        $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(5, 150, 105)
-        $button.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(4, 120, 87)
-    } elseif ($Kind -eq "accent") {
-        $button.BackColor = [System.Drawing.Color]::FromArgb(217, 119, 6)
-        $button.ForeColor = [System.Drawing.Color]::FromArgb(255, 251, 235)
-        $button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(245, 158, 11)
-        $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(180, 83, 9)
-        $button.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(146, 64, 14)
-    } else {
-        $button.BackColor = [System.Drawing.Color]::FromArgb(18, 30, 24)
-        $button.ForeColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
-        $button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(42, 60, 49)
-        $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(28, 44, 35)
-        $button.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(10, 20, 15)
+    $button.FlatStyle = [System.Windows.Forms.FlatStyle]::System
+    $button.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $button.UseVisualStyleBackColor = $true
+    if ($Primary) {
+        $button.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $button.BackColor = [System.Drawing.Color]::FromArgb(16, 94, 72)
+        $button.ForeColor = [System.Drawing.Color]::White
+        $button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(16, 94, 72)
+        $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(20, 120, 92)
+        $button.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(12, 72, 56)
     }
-
-    $button.Add_HandleCreated({ Set-RoundedRegion $button 8 })
-    $button.Add_Resize({ Set-RoundedRegion $button 8 })
     return $button
 }
 
-function Ensure-RoundedTextBoxControl {
-    if (([System.Management.Automation.PSTypeName]'RoundedTextBoxControl').Type) {
-        return
-    }
-
-    Add-Type -ReferencedAssemblies "System.Windows.Forms", "System.Drawing" -TypeDefinition @"
-using System;
-using System.ComponentModel;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Windows.Forms;
-
-public class RoundedTextBoxControl : UserControl {
-    public TextBox InnerTextBox;
-    private Color borderColor = Color.FromArgb(42, 60, 49);
-    private Color focusBorderColor = Color.FromArgb(58, 85, 69);
-
-    public RoundedTextBoxControl() {
-        this.DoubleBuffered = true;
-        this.BackColor = Color.FromArgb(25, 39, 31);
-        this.Padding = new Padding(12, 5, 12, 4);
-        this.Height = 30;
-
-        InnerTextBox = new TextBox();
-        InnerTextBox.BorderStyle = BorderStyle.None;
-        InnerTextBox.BackColor = Color.FromArgb(25, 39, 31);
-        InnerTextBox.ForeColor = Color.FromArgb(226, 232, 240);
-        InnerTextBox.Font = new Font("Microsoft YaHei UI", 9.5f);
-        InnerTextBox.Location = new Point(12, 6);
-        InnerTextBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
-        InnerTextBox.Width = this.Width - 24;
-        InnerTextBox.TextChanged += delegate { this.OnTextChanged(EventArgs.Empty); };
-        InnerTextBox.GotFocus += delegate { this.Invalidate(); };
-        InnerTextBox.LostFocus += delegate { this.Invalidate(); };
-        this.Controls.Add(InnerTextBox);
-
-        this.Resize += delegate {
-            InnerTextBox.Width = this.Width - 24;
-            InnerTextBox.Location = new Point(12, Math.Max(5, (this.Height - InnerTextBox.Height) / 2));
-            this.Invalidate();
-        };
-        this.Click += delegate { InnerTextBox.Focus(); };
-    }
-
-    [Browsable(true)]
-    public override string Text {
-        get { return InnerTextBox.Text; }
-        set { InnerTextBox.Text = value; }
-    }
-
-    protected override void OnPaint(PaintEventArgs e) {
-        base.OnPaint(e);
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        Rectangle rect = new Rectangle(0, 0, this.Width - 1, this.Height - 1);
-        int radius = 9;
-        using (GraphicsPath path = new GraphicsPath()) {
-            int d = radius * 2;
-            path.AddArc(rect.X, rect.Y, d, d, 180, 90);
-            path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
-            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
-            path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
-            path.CloseFigure();
-            using (SolidBrush brush = new SolidBrush(this.BackColor)) {
-                e.Graphics.FillPath(brush, path);
-            }
-            using (Pen pen = new Pen(InnerTextBox.Focused ? focusBorderColor : borderColor, 1)) {
-                e.Graphics.DrawPath(pen, path);
-            }
-        }
-    }
-}
-"@
-}
-
-function New-GlassTextBox($Text, $Location, $Size) {
-    Ensure-RoundedTextBoxControl
-    $box = New-Object RoundedTextBoxControl
-    $box.Text = $Text
-    $box.Location = $Location
-    $box.Size = $Size
-    $box.BackColor = [System.Drawing.Color]::FromArgb(25, 39, 31)
-    $box.ForeColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
-    $box.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.5)
-    return $box
-}
-
-function New-FolderIconBitmap($Width = 18, $Height = 18) {
-    $bitmap = New-Object System.Drawing.Bitmap($Width, $Height)
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $graphics.Clear([System.Drawing.Color]::Transparent)
-
-    $tabBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(245, 158, 11))
-    $bodyBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(217, 119, 6))
-    $linePen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(253, 230, 138), 1.2)
-
-    $graphics.FillRectangle($tabBrush, 2, 4, 6, 3)
-    $graphics.FillRectangle($bodyBrush, 2, 6, 14, 9)
-    $graphics.DrawRectangle($linePen, 2, 6, 14, 9)
-
-    $tabBrush.Dispose()
-    $bodyBrush.Dispose()
-    $linePen.Dispose()
-    $graphics.Dispose()
-    return $bitmap
-}
-
-function New-FolderButton($Location, $ToolTipText) {
-    $button = New-GlassButton -Text "" -Location $Location -Size (New-Object System.Drawing.Size(42, 32))
-    $button.Image = New-FolderIconBitmap
-    $button.ImageAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $button.AccessibleName = $ToolTipText
-    return $button
-}
-
-function New-SidebarButton($Text, $Location, $Size) {
-    $button = New-GlassButton -Text $Text -Location $Location -Size $Size
-    $button.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
-    $button.Padding = New-Object System.Windows.Forms.Padding(20, 0, 0, 0)
-    $button.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 10.5, [System.Drawing.FontStyle]::Bold)
-    $button.FlatAppearance.BorderSize = 0
-    $button.FlatAppearance.BorderColor = $button.BackColor
-    return $button
-}
-
-function Select-FolderPath($TextBox, $DialogDescription, $Owner = $null) {
-    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = $DialogDescription
-    $dialog.ShowNewFolderButton = $true
-    if (-not [string]::IsNullOrWhiteSpace($TextBox.Text) -and (Test-Path -LiteralPath $TextBox.Text)) {
-        $dialog.SelectedPath = $TextBox.Text
-    }
-    if ($Owner) {
-        $result = $dialog.ShowDialog($Owner)
-    } else {
-        $result = $dialog.ShowDialog()
-    }
-    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-        $TextBox.Text = $dialog.SelectedPath
-    }
-    $dialog.Dispose()
-}
-
-function New-ConfigHealthDot($Location) {
-    $dot = New-Object System.Windows.Forms.Label
-    $dot.Text = U "\u25cf"
-    $dot.Location = $Location
-    $dot.Size = New-Object System.Drawing.Size(22, 24)
-    $dot.BackColor = [System.Drawing.Color]::Transparent
-    $dot.ForeColor = [System.Drawing.Color]::FromArgb(160, 73, 73)
-    $dot.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
-    $dot.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    return $dot
-}
-
-function Update-ConfigHealthDot($Dot, $IsOk) {
-    if ($IsOk) {
-        $Dot.ForeColor = [System.Drawing.Color]::FromArgb(52, 211, 153)
-        $Dot.AccessibleName = "OK"
-    } else {
-        $Dot.ForeColor = [System.Drawing.Color]::FromArgb(248, 113, 113)
-        $Dot.AccessibleName = "Missing"
-    }
-}
-
-function New-GlassLabel($Text, $Location, $Size, $Style = "body") {
+function Add-PathRow($Parent, $LabelText, $Text, $Y, $Kind) {
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = $Text
-    $label.Location = $Location
-    $label.Size = $Size
-    $label.BackColor = [System.Drawing.Color]::Transparent
-    $label.ForeColor = [System.Drawing.Color]::FromArgb(232, 241, 236)
-    if ($Style -eq "title") {
-        $label.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 18, [System.Drawing.FontStyle]::Bold)
-        $label.ForeColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
-    } elseif ($Style -eq "muted") {
-        $label.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8.8)
-        $label.ForeColor = [System.Drawing.Color]::FromArgb(151, 169, 160)
-    } elseif ($Style -eq "section") {
-        $label.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 10.2, [System.Drawing.FontStyle]::Bold)
-        $label.ForeColor = [System.Drawing.Color]::FromArgb(82, 255, 157)
-    } else {
-        $label.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.2)
-    }
-    return $label
-}
+    $label.Text = $LabelText
+    $label.Location = New-Object System.Drawing.Point(18, $Y)
+    $label.Size = New-Object System.Drawing.Size(132, 24)
+    $label.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $label.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $Parent.Controls.Add($label)
 
-function New-StatusBadge($Title, $Location, $Size) {
-    $panel = New-Object System.Windows.Forms.Panel
-    $panel.Location = $Location
-    $panel.Size = $Size
-    $panel.BackColor = [System.Drawing.Color]::FromArgb(18, 30, 24)
-    $panel.BorderStyle = [System.Windows.Forms.BorderStyle]::None
-    $panel.Add_HandleCreated({ Set-RoundedRegion $panel 8 })
-    $panel.Add_Resize({ Set-RoundedRegion $panel 8 })
+    $box = New-Object System.Windows.Forms.TextBox
+    $box.Text = $Text
+    $box.Location = New-Object System.Drawing.Point(154, ($Y + 1))
+    $box.Size = New-Object System.Drawing.Size(610, 24)
+    $box.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $Parent.Controls.Add($box)
 
-    $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = $Title
-    $titleLabel.Location = New-Object System.Drawing.Point(10, 6)
-    $titleLabel.Size = New-Object System.Drawing.Size(72, 18)
-    $titleLabel.BackColor = [System.Drawing.Color]::Transparent
-    $titleLabel.ForeColor = [System.Drawing.Color]::FromArgb(151, 169, 160)
-    $titleLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
-    $panel.Controls.Add($titleLabel)
-
-    $valueLabel = New-Object System.Windows.Forms.Label
-    $valueLabel.Text = "-"
-    $valueLabel.Location = New-Object System.Drawing.Point(84, 5)
-    $valueLabel.Size = New-Object System.Drawing.Size(($Size.Width - 92), 20)
-    $valueLabel.BackColor = [System.Drawing.Color]::Transparent
-    $valueLabel.ForeColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
-    $valueLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8.5, [System.Drawing.FontStyle]::Bold)
-    $panel.Controls.Add($valueLabel)
+    $button = New-NativeButton -Text (U "\u9009\u62e9") -Location (New-Object System.Drawing.Point(776, ($Y - 1))) -Size (New-Object System.Drawing.Size(86, 28))
+    $button.Tag = $Kind
+    $Parent.Controls.Add($button)
 
     return [PSCustomObject]@{
-        Panel = $panel
-        ValueLabel = $valueLabel
+        Label = $label
+        TextBox = $box
+        Button = $button
+        Kind = $Kind
     }
 }
 
-function Update-StatusBadge($Badge, $Value, $IsOk = $true) {
-    $Badge.ValueLabel.Text = [string]$Value
-    if ($IsOk) {
-        $Badge.ValueLabel.ForeColor = [System.Drawing.Color]::FromArgb(110, 231, 183)
-    } else {
-        $Badge.ValueLabel.ForeColor = [System.Drawing.Color]::FromArgb(251, 191, 36)
-    }
+function Add-StatusRow($Parent, $LabelText, $Y) {
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $LabelText
+    $label.Location = New-Object System.Drawing.Point(18, $Y)
+    $label.Size = New-Object System.Drawing.Size(104, 22)
+    $label.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $Parent.Controls.Add($label)
+
+    $value = New-Object System.Windows.Forms.Label
+    $value.Text = "-"
+    $value.Location = New-Object System.Drawing.Point(128, $Y)
+    $value.Size = New-Object System.Drawing.Size(150, 22)
+    $value.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9, [System.Drawing.FontStyle]::Bold)
+    $value.ForeColor = [System.Drawing.Color]::FromArgb(16, 94, 72)
+    $Parent.Controls.Add($value)
+    return $value
 }
 
-function Show-SettingsDialog($Owner, $Settings) {
-    $dialog = New-Object System.Windows.Forms.Form
-    $dialog.Text = U "\u8bbe\u7f6e"
-    $dialog.Size = New-Object System.Drawing.Size(760, 420)
-    $dialog.StartPosition = "CenterParent"
-    $dialog.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-    $dialog.MaximizeBox = $false
-    $dialog.MinimizeBox = $false
-    $dialog.BackColor = [System.Drawing.Color]::FromArgb(8, 14, 12)
-    $dialog.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
-
-    $title = New-GlassLabel -Text (U "\u8bbe\u7f6e") -Location (New-Object System.Drawing.Point(26, 18)) -Size (New-Object System.Drawing.Size(180, 34)) -Style "title"
-    $dialog.Controls.Add($title)
-
-    $panel = New-GlassPanel -Location (New-Object System.Drawing.Point(26, 64)) -Size (New-Object System.Drawing.Size(692, 238)) -Radius 6
-    $dialog.Controls.Add($panel)
-
-    function Add-SettingRow($LabelText, $Text, $Y, $Kind) {
-        $label = New-GlassLabel -Text $LabelText -Location (New-Object System.Drawing.Point(20, $Y)) -Size (New-Object System.Drawing.Size(120, 26)) -Style "section"
-        $panel.Controls.Add($label)
-
-        $box = New-GlassTextBox -Text $Text -Location (New-Object System.Drawing.Point(142, ($Y - 2))) -Size (New-Object System.Drawing.Size(462, 26))
-        $panel.Controls.Add($box)
-
-        $button = New-FolderButton -Location (New-Object System.Drawing.Point(620, ($Y - 4))) -ToolTipText $LabelText
-        $panel.Controls.Add($button)
-
-        if ($Kind -eq "file") {
-            $button.Add_Click({
-                $fileDialog = New-Object System.Windows.Forms.OpenFileDialog
-                $fileDialog.Title = $LabelText
-                $fileDialog.Filter = "config.toml|config.toml|TOML files (*.toml)|*.toml|All files (*.*)|*.*"
-                $fileDialog.FileName = "config.toml"
-                if (-not [string]::IsNullOrWhiteSpace($box.Text)) {
-                    $folder = Split-Path -Parent $box.Text
-                    if (Test-Path -LiteralPath $folder) {
-                        $fileDialog.InitialDirectory = $folder
-                    }
-                }
-                if ($fileDialog.ShowDialog($dialog) -eq [System.Windows.Forms.DialogResult]::OK) {
-                    $box.Text = $fileDialog.FileName
-                }
-                $fileDialog.Dispose()
-            })
-        } else {
-            $button.Add_Click({ Select-FolderPath $box $LabelText $dialog })
-        }
-
-        return $box
+function Set-UiBusy($Controls, $StatusLabel, $Busy, $Text) {
+    foreach ($control in @($Controls)) {
+        if ($control) { $control.Enabled = -not $Busy }
     }
-
-    $officialBox = Add-SettingRow (U "OpenAI \u914d\u7f6e") $Settings.officialConfigPath 22 "file"
-    $cpamcBox = Add-SettingRow (U "CPAMC \u914d\u7f6e") $Settings.cpamcConfigPath 72 "file"
-    $codexBox = Add-SettingRow (U "Codex \u6570\u636e") $Settings.codexHome 122 "folder"
-    $backupBox = Add-SettingRow (U "\u5907\u4efd\u76ee\u5f55") $Settings.backupRoot 172 "folder"
-
-    $cancelButton = New-GlassButton -Text (U "\u53d6\u6d88") -Location (New-Object System.Drawing.Point(454, 326)) -Size (New-Object System.Drawing.Size(110, 38))
-    $dialog.Controls.Add($cancelButton)
-
-    $saveButton = New-GlassButton -Text (U "\u4fdd\u5b58") -Location (New-Object System.Drawing.Point(584, 326)) -Size (New-Object System.Drawing.Size(110, 38)) -Kind "primary"
-    $dialog.Controls.Add($saveButton)
-
-    $script:settingsSaved = $false
-    $cancelButton.Add_Click({ $dialog.Close() })
-    $saveButton.Add_Click({
-        if ([string]::IsNullOrWhiteSpace($backupBox.Text)) {
-            [System.Windows.Forms.MessageBox]::Show((U "\u8bf7\u9009\u62e9\u5907\u4efd\u76ee\u5f55"), $Script:Title, "OK", "Warning") | Out-Null
-            return
-        }
-
-        $Settings.officialConfigPath = $officialBox.Text.Trim()
-        $Settings.cpamcConfigPath = $cpamcBox.Text.Trim()
-        $Settings.codexHome = $codexBox.Text.Trim()
-        $Settings.backupRoot = $backupBox.Text.Trim()
-        Save-SwitcherSettings $Settings
-        $script:settingsSaved = $true
-        $dialog.Close()
-    })
-
-    if ($Owner) {
-        [void]$dialog.ShowDialog($Owner)
-    } else {
-        [void]$dialog.ShowDialog()
+    if ($StatusLabel) {
+        $StatusLabel.Text = [string]$Text
     }
-    return $script:settingsSaved
 }
 
 function Show-UnifiedForm {
+    Write-OCLog "Starting O-C UI"
     $settings = Load-SwitcherSettings
     Ensure-SwitcherDirs (Get-AppRootFromBackupRoot $settings.backupRoot)
+    $scriptPath = $PSCommandPath
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = $Script:Title
-    $form.Size = New-Object System.Drawing.Size(980, 600)
-    $form.StartPosition = "CenterScreen"
-    $form.FormBorderStyle = "None"
+    $form.Size = New-Object System.Drawing.Size(980, 700)
+    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
     $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
-    $form.Opacity = 1.0
-    $form.BackColor = [System.Drawing.Color]::FromArgb(38, 45, 42)
+    $form.MinimizeBox = $true
+    $form.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
     $form.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
-    $form.Add_Shown({ Enable-GlassBackdrop $form; Set-RoundedRegion $form 10 })
-    $form.Add_Resize({ Set-RoundedRegion $form 10 })
 
-    $dragging = $false
-    $dragOffset = New-Object System.Drawing.Point(0, 0)
-    $startDrag = {
-        $script:dragging = $true
-        $script:dragOffset = [System.Windows.Forms.Cursor]::Position
-        $script:dragOffset.Offset((0 - $form.Left), (0 - $form.Top))
-    }
-    $moveDrag = {
-        if ($script:dragging) {
-            $point = [System.Windows.Forms.Cursor]::Position
-            $point.Offset((0 - $script:dragOffset.X), (0 - $script:dragOffset.Y))
-            $form.Location = $point
-        }
-    }
-    $endDrag = { $script:dragging = $false }
+    $title = New-Object System.Windows.Forms.Label
+    $title.Text = U "\u004f\u002d\u0043 \u0043\u006f\u0064\u0065\u0078 \u5de5\u5177\u7bb1"
+    $title.Location = New-Object System.Drawing.Point(24, 18)
+    $title.Size = New-Object System.Drawing.Size(520, 34)
+    $title.ForeColor = [System.Drawing.Color]::FromArgb(17, 24, 39)
+    $title.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 18, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($title)
 
-    $sidebar = New-Object System.Windows.Forms.Panel
-    $sidebar.Location = New-Object System.Drawing.Point(0, 0)
-    $sidebar.Size = New-Object System.Drawing.Size(220, 600)
-    $sidebar.BackColor = [System.Drawing.Color]::FromArgb(12, 24, 18)
-    $sidebar.Add_MouseDown($startDrag)
-    $sidebar.Add_MouseMove($moveDrag)
-    $sidebar.Add_MouseUp($endDrag)
-    $form.Controls.Add($sidebar)
+    $subTitle = New-Object System.Windows.Forms.Label
+    $subTitle.Text = U "\u5907\u4efd\u548c\u6062\u590d\u5f53\u524d\u7528\u6237 .codex \u804a\u5929\u6570\u636e\uff0c\u914d\u7f6e\u5207\u6362\u4fdd\u6301\u7b80\u5355\u3002"
+    $subTitle.Location = New-Object System.Drawing.Point(26, 54)
+    $subTitle.Size = New-Object System.Drawing.Size(760, 24)
+    $subTitle.ForeColor = [System.Drawing.Color]::FromArgb(75, 85, 99)
+    $subTitle.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.5)
+    $form.Controls.Add($subTitle)
 
-    $brandMark = New-Object System.Windows.Forms.Label
-    $brandMark.Text = "C"
-    $brandMark.Location = New-Object System.Drawing.Point(26, 28)
-    $brandMark.Size = New-Object System.Drawing.Size(36, 36)
-    $brandMark.BackColor = [System.Drawing.Color]::FromArgb(30, 52, 40)
-    $brandMark.ForeColor = [System.Drawing.Color]::FromArgb(110, 231, 183)
-    $brandMark.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 15, [System.Drawing.FontStyle]::Bold)
-    $brandMark.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $brandMark.Add_HandleCreated({ Set-RoundedRegion $brandMark 12 })
-    $sidebar.Controls.Add($brandMark)
+    $pathsSection = New-NativeSection -Parent $form -Text (U "\u914d\u7f6e\u6587\u4ef6") -Location (New-Object System.Drawing.Point(24, 90)) -Size (New-Object System.Drawing.Size(930, 106))
+    $openaiRow = Add-PathRow -Parent $pathsSection -LabelText (U "\u004f\u0070\u0065\u006e\u0041\u0049 \u914d\u7f6e") -Text $settings.officialConfigPath -Y 30 -Kind "file"
+    $cpamcRow = Add-PathRow -Parent $pathsSection -LabelText (U "\u0041\u0050\u0049 \u914d\u7f6e") -Text $settings.cpamcConfigPath -Y 66 -Kind "file"
 
-    $brand = New-GlassLabel -Text "O-C" -Location (New-Object System.Drawing.Point(76, 28)) -Size (New-Object System.Drawing.Size(110, 30)) -Style "title"
-    $brand.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 15, [System.Drawing.FontStyle]::Bold)
-    $sidebar.Controls.Add($brand)
+    $chatPathsSection = New-NativeSection -Parent $form -Text (U "\u804a\u5929\u8bb0\u5f55\u8def\u5f84") -Location (New-Object System.Drawing.Point(24, 210)) -Size (New-Object System.Drawing.Size(930, 128))
+    $chatBackupSaveRow = Add-PathRow -Parent $chatPathsSection -LabelText (U "\u804a\u5929\u5907\u4efd\u4fdd\u5b58\u5230") -Text $settings.chatBackupDirectory -Y 30 -Kind "folder"
+    $restoreBackupPathRow = Add-PathRow -Parent $chatPathsSection -LabelText (U "\u6062\u590d\u5907\u4efd\u6570\u636e\u4f4d\u7f6e") -Text $settings.chatRestoreBackupPath -Y 66 -Kind "folder"
+    $defaultCodexNote = New-Object System.Windows.Forms.Label
+    $defaultCodexNote.Text = (U "\u9ed8\u8ba4\u8bfb\u53d6\u5e76\u6062\u590d\u5230\u5f53\u524d\u7528\u6237 .codex") + "  " + $Script:DefaultCodexHome
+    $defaultCodexNote.Location = New-Object System.Drawing.Point(154, 100)
+    $defaultCodexNote.Size = New-Object System.Drawing.Size(740, 20)
+    $defaultCodexNote.ForeColor = [System.Drawing.Color]::FromArgb(75, 85, 99)
+    $chatPathsSection.Controls.Add($defaultCodexNote)
 
-    $brandSub = New-GlassLabel -Text (U "\u6a21\u5f0f\u4e0e\u8bb0\u5f55\u540c\u6b65") -Location (New-Object System.Drawing.Point(78, 58)) -Size (New-Object System.Drawing.Size(128, 22)) -Style "muted"
-    $sidebar.Controls.Add($brandSub)
+    $backupSection = New-NativeSection -Parent $form -Text (U "\u804a\u5929\u8bb0\u5f55\u5907\u4efd") -Location (New-Object System.Drawing.Point(24, 352)) -Size (New-Object System.Drawing.Size(610, 280))
+    $listTitle = New-Object System.Windows.Forms.Label
+    $listTitle.Text = U "\u5907\u4efd\u5217\u8868"
+    $listTitle.Location = New-Object System.Drawing.Point(18, 28)
+    $listTitle.Size = New-Object System.Drawing.Size(160, 22)
+    $listTitle.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 10, [System.Drawing.FontStyle]::Bold)
+    $backupSection.Controls.Add($listTitle)
 
-    $modeNav = New-SidebarButton -Text (U "\u6a21\u5f0f\u5207\u6362") -Location (New-Object System.Drawing.Point(14, 132)) -Size (New-Object System.Drawing.Size(192, 44))
-    $sidebar.Controls.Add($modeNav)
+    $backupList = New-Object System.Windows.Forms.ListView
+    $backupList.Location = New-Object System.Drawing.Point(18, 56)
+    $backupList.Size = New-Object System.Drawing.Size(568, 134)
+    $backupList.View = [System.Windows.Forms.View]::Details
+    $backupList.FullRowSelect = $true
+    $backupList.MultiSelect = $false
+    $backupList.GridLines = $true
+    [void]$backupList.Columns.Add((U "\u5907\u4efd\u540d\u79f0"), 285)
+    [void]$backupList.Columns.Add((U "\u65f6\u95f4"), 150)
+    [void]$backupList.Columns.Add((U "\u9879\u76ee"), 70)
+    $backupSection.Controls.Add($backupList)
 
-    $settingsNav = New-SidebarButton -Text (U "\u8bbe\u7f6e") -Location (New-Object System.Drawing.Point(14, 188)) -Size (New-Object System.Drawing.Size(192, 44))
-    $sidebar.Controls.Add($settingsNav)
+    $backupButton = New-NativeButton -Text (U "\u5f00\u59cb\u5907\u4efd") -Location (New-Object System.Drawing.Point(18, 206)) -Size (New-Object System.Drawing.Size(116, 36)) -Primary
+    $restoreButton = New-NativeButton -Text (U "\u6062\u590d\u9009\u4e2d\u7684\u5907\u4efd") -Location (New-Object System.Drawing.Point(144, 206)) -Size (New-Object System.Drawing.Size(148, 36)) -Primary
+    $refreshButton = New-NativeButton -Text (U "\u5237\u65b0\u5217\u8868") -Location (New-Object System.Drawing.Point(302, 206)) -Size (New-Object System.Drawing.Size(104, 36))
+    $simulateButton = New-NativeButton -Text (U "\u6a21\u62df\u6062\u590d") -Location (New-Object System.Drawing.Point(416, 206)) -Size (New-Object System.Drawing.Size(104, 36))
+    $backupSection.Controls.AddRange(@($backupButton, $restoreButton, $refreshButton, $simulateButton))
 
-    $sideLine = New-Object System.Windows.Forms.Panel
-    $sideLine.Location = New-Object System.Drawing.Point(24, 270)
-    $sideLine.Size = New-Object System.Drawing.Size(172, 1)
-    $sideLine.BackColor = [System.Drawing.Color]::FromArgb(35, 50, 41)
-    $sidebar.Controls.Add($sideLine)
+    $summarySection = New-NativeSection -Parent $form -Text (U "\u5907\u4efd\u6458\u8981") -Location (New-Object System.Drawing.Point(650, 352)) -Size (New-Object System.Drawing.Size(304, 280))
+    $summaryBox = New-Object System.Windows.Forms.TextBox
+    $summaryBox.Location = New-Object System.Drawing.Point(18, 30)
+    $summaryBox.Size = New-Object System.Drawing.Size(268, 96)
+    $summaryBox.Multiline = $true
+    $summaryBox.ReadOnly = $true
+    $summaryBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $summaryBox.BackColor = [System.Drawing.Color]::White
+    $summaryBox.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $summarySection.Controls.Add($summaryBox)
 
-    $hint = New-GlassLabel -Text (U "\u5907\u4efd\u76ee\u5f55\u7531\u8bbe\u7f6e\u9875\u7edf\u4e00\u7ba1\u7406") -Location (New-Object System.Drawing.Point(24, 520)) -Size (New-Object System.Drawing.Size(166, 46)) -Style "muted"
-    $sidebar.Controls.Add($hint)
+    $modeValue = Add-StatusRow -Parent $summarySection -LabelText (U "\u5f53\u524d\u6a21\u5f0f") -Y 132
+    $authValue = Add-StatusRow -Parent $summarySection -LabelText (U "\u767b\u5f55\u65b9\u5f0f") -Y 160
+    $configValue = Add-StatusRow -Parent $summarySection -LabelText (U "\u914d\u7f6e\u72b6\u6001") -Y 188
 
-    $contentRoot = New-Object System.Windows.Forms.Panel
-    $contentRoot.Location = New-Object System.Drawing.Point(220, 0)
-    $contentRoot.Size = New-Object System.Drawing.Size(760, 600)
-    $contentRoot.BackColor = [System.Drawing.Color]::Transparent
-    $form.Controls.Add($contentRoot)
+    $oauthButton = New-NativeButton -Text (U "\u5207\u6362\u81f3 OAuth") -Location (New-Object System.Drawing.Point(18, 222)) -Size (New-Object System.Drawing.Size(124, 36)) -Primary
+    $cpamcButton = New-NativeButton -Text (U "\u5207\u6362\u81f3 API") -Location (New-Object System.Drawing.Point(154, 222)) -Size (New-Object System.Drawing.Size(132, 36))
+    $summarySection.Controls.AddRange(@($oauthButton, $cpamcButton))
 
-    $topBar = New-Object System.Windows.Forms.Panel
-    $topBar.Location = New-Object System.Drawing.Point(0, 0)
-    $topBar.Size = New-Object System.Drawing.Size(760, 76)
-    $topBar.BackColor = [System.Drawing.Color]::Transparent
-    $topBar.Add_MouseDown($startDrag)
-    $topBar.Add_MouseMove($moveDrag)
-    $topBar.Add_MouseUp($endDrag)
-    $contentRoot.Controls.Add($topBar)
+    $saveSettingsButton = New-NativeButton -Text (U "\u4fdd\u5b58\u8bbe\u7f6e") -Location (New-Object System.Drawing.Point(810, 42)) -Size (New-Object System.Drawing.Size(120, 34)) -Primary
+    $form.Controls.Add($saveSettingsButton)
 
-    $pageTitle = New-GlassLabel -Text (U "\u6a21\u5f0f\u5207\u6362") -Location (New-Object System.Drawing.Point(44, 14)) -Size (New-Object System.Drawing.Size(220, 30)) -Style "title"
-    $pageTitle.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 14, [System.Drawing.FontStyle]::Bold)
-    $topBar.Controls.Add($pageTitle)
+    $statusStrip = New-Object System.Windows.Forms.StatusStrip
+    $statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
+    $statusLabel.Text = U "\u5c31\u7eea"
+    [void]$statusStrip.Items.Add($statusLabel)
+    $form.Controls.Add($statusStrip)
 
-    $pageSubTitle = New-GlassLabel -Text (U "\u4e00\u4e2a\u7a97\u53e3\u5b8c\u6210\u8d26\u53f7\u5207\u6362\u548c\u5386\u53f2\u8bb0\u5f55\u540c\u6b65") -Location (New-Object System.Drawing.Point(46, 46)) -Size (New-Object System.Drawing.Size(420, 20)) -Style "muted"
-    $topBar.Controls.Add($pageSubTitle)
-
-    $minButton = New-GlassButton -Text "-" -Location (New-Object System.Drawing.Point(646, 20)) -Size (New-Object System.Drawing.Size(36, 30))
-    $minButton.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-    $topBar.Controls.Add($minButton)
-
-    $closeTopButton = New-GlassButton -Text "X" -Location (New-Object System.Drawing.Point(696, 20)) -Size (New-Object System.Drawing.Size(36, 30))
-    $closeTopButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $closeTopButton.ForeColor = [System.Drawing.Color]::FromArgb(203, 213, 225)
-    $topBar.Controls.Add($closeTopButton)
-
-    $modePage = New-Object System.Windows.Forms.Panel
-    $modePage.Location = New-Object System.Drawing.Point(0, 76)
-    $modePage.Size = New-Object System.Drawing.Size(760, 524)
-    $modePage.BackColor = [System.Drawing.Color]::Transparent
-    $contentRoot.Controls.Add($modePage)
-
-    $settingsPage = New-Object System.Windows.Forms.Panel
-    $settingsPage.Location = New-Object System.Drawing.Point(0, 76)
-    $settingsPage.Size = New-Object System.Drawing.Size(760, 524)
-    $settingsPage.BackColor = [System.Drawing.Color]::Transparent
-    $settingsPage.Visible = $false
-    $contentRoot.Controls.Add($settingsPage)
-
-    $statusPanel = New-GlassPanel -Location (New-Object System.Drawing.Point(56, 398)) -Size (New-Object System.Drawing.Size(640, 112)) -Radius 10
-    $modePage.Controls.Add($statusPanel)
-
-    $statusTitle = New-GlassLabel -Text (U "\u5f53\u524d\u72b6\u6001") -Location (New-Object System.Drawing.Point(24, 18)) -Size (New-Object System.Drawing.Size(120, 24)) -Style "section"
-    $statusPanel.Controls.Add($statusTitle)
-
-    $modeBadge = New-StatusBadge -Title (U "\u5f53\u524d\u6a21\u5f0f") -Location (New-Object System.Drawing.Point(24, 58)) -Size (New-Object System.Drawing.Size(136, 32))
-    $statusPanel.Controls.Add($modeBadge.Panel)
-
-    $authBadge = New-StatusBadge -Title (U "\u767b\u5f55\u65b9\u5f0f") -Location (New-Object System.Drawing.Point(174, 58)) -Size (New-Object System.Drawing.Size(136, 32))
-    $statusPanel.Controls.Add($authBadge.Panel)
-
-    $configBadge = New-StatusBadge -Title (U "\u914d\u7f6e\u6587\u4ef6") -Location (New-Object System.Drawing.Point(324, 58)) -Size (New-Object System.Drawing.Size(136, 32))
-    $statusPanel.Controls.Add($configBadge.Panel)
-
-    $backupBadge = New-StatusBadge -Title (U "\u5b89\u5168\u5907\u4efd") -Location (New-Object System.Drawing.Point(474, 58)) -Size (New-Object System.Drawing.Size(136, 32))
-    $statusPanel.Controls.Add($backupBadge.Panel)
-
-    $configPanel = New-GlassPanel -Location (New-Object System.Drawing.Point(56, 44)) -Size (New-Object System.Drawing.Size(640, 320)) -Radius 10
-    $modePage.Controls.Add($configPanel)
-
-    $configTitle = New-GlassLabel -Text (U "\u914d\u7f6e\u6587\u4ef6") -Location (New-Object System.Drawing.Point(26, 24)) -Size (New-Object System.Drawing.Size(160, 26)) -Style "title"
-    $configTitle.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 13, [System.Drawing.FontStyle]::Bold)
-    $configPanel.Controls.Add($configTitle)
-
-    $configDesc = New-GlassLabel -Text (U "\u9009\u62e9\u4e24\u5957 Codex \u914d\u7f6e\uff0c\u5207\u6362\u65f6\u4f1a\u81ea\u52a8\u5907\u4efd\u5e76\u540c\u6b65\u8bb0\u5f55\u3002") -Location (New-Object System.Drawing.Point(26, 54)) -Size (New-Object System.Drawing.Size(548, 22)) -Style "muted"
-    $configPanel.Controls.Add($configDesc)
-
-    $officialLabel = New-GlassLabel -Text (U "OpenAI") -Location (New-Object System.Drawing.Point(26, 90)) -Size (New-Object System.Drawing.Size(92, 24)) -Style "section"
-    $configPanel.Controls.Add($officialLabel)
-
-    $officialText = New-GlassTextBox -Text $settings.officialConfigPath -Location (New-Object System.Drawing.Point(26, 116)) -Size (New-Object System.Drawing.Size(508, 30))
-    $configPanel.Controls.Add($officialText)
-
-    $officialPicker = New-FolderButton -Location (New-Object System.Drawing.Point(548, 115)) -ToolTipText (U "\u9009\u62e9 OpenAI \u914d\u7f6e\u6587\u4ef6")
-    $configPanel.Controls.Add($officialPicker)
-
-    $officialDot = New-ConfigHealthDot -Location (New-Object System.Drawing.Point(592, 120))
-    $configPanel.Controls.Add($officialDot)
-
-    $cpamcLabel = New-GlassLabel -Text (U "CPAMC") -Location (New-Object System.Drawing.Point(26, 164)) -Size (New-Object System.Drawing.Size(92, 24)) -Style "section"
-    $configPanel.Controls.Add($cpamcLabel)
-
-    $cpamcText = New-GlassTextBox -Text $settings.cpamcConfigPath -Location (New-Object System.Drawing.Point(26, 190)) -Size (New-Object System.Drawing.Size(508, 30))
-    $configPanel.Controls.Add($cpamcText)
-
-    $cpamcPicker = New-FolderButton -Location (New-Object System.Drawing.Point(548, 189)) -ToolTipText (U "\u9009\u62e9 CPAMC \u914d\u7f6e\u6587\u4ef6")
-    $configPanel.Controls.Add($cpamcPicker)
-
-    $cpamcDot = New-ConfigHealthDot -Location (New-Object System.Drawing.Point(592, 194))
-    $configPanel.Controls.Add($cpamcDot)
-
-    $oauthButton = New-GlassButton -Text (U "\u5207\u6362\u81f3OAuth") -Location (New-Object System.Drawing.Point(102, 252)) -Size (New-Object System.Drawing.Size(172, 44)) -Kind "primary"
-    $oauthButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 12, [System.Drawing.FontStyle]::Bold)
-    $configPanel.Controls.Add($oauthButton)
-
-    $cpamcButton = New-GlassButton -Text (U "\u5207\u6362\u81f3CPAMC") -Location (New-Object System.Drawing.Point(298, 252)) -Size (New-Object System.Drawing.Size(172, 44)) -Kind "accent"
-    $cpamcButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 12, [System.Drawing.FontStyle]::Bold)
-    $configPanel.Controls.Add($cpamcButton)
-
-    $settingsCard = New-GlassPanel -Location (New-Object System.Drawing.Point(56, 44)) -Size (New-Object System.Drawing.Size(640, 438)) -Radius 10
-    $settingsPage.Controls.Add($settingsCard)
-
-    $settingsTitle = New-GlassLabel -Text (U "\u8def\u5f84\u8bbe\u7f6e") -Location (New-Object System.Drawing.Point(26, 24)) -Size (New-Object System.Drawing.Size(180, 30)) -Style "title"
-    $settingsTitle.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 13, [System.Drawing.FontStyle]::Bold)
-    $settingsCard.Controls.Add($settingsTitle)
-
-    $settingsDesc = New-GlassLabel -Text (U "\u8fd9\u4e9b\u8def\u5f84\u4f1a\u4fdd\u5b58\u5230 AppData\uff0c\u5907\u4efd\u5185\u5bb9\u4f1a\u6309\u8bbe\u5b9a\u76ee\u5f55\u5b58\u653e\u3002") -Location (New-Object System.Drawing.Point(28, 54)) -Size (New-Object System.Drawing.Size(560, 22)) -Style "muted"
-    $settingsCard.Controls.Add($settingsDesc)
-
-    function Add-InlineSettingRow($LabelText, $Text, $Y, $Kind) {
-        $yPos = [int]$Y
-        $label = New-GlassLabel -Text $LabelText -Location (New-Object System.Drawing.Point(28, $yPos)) -Size (New-Object System.Drawing.Size(180, 24)) -Style "section"
-        $settingsCard.Controls.Add($label)
-
-        $box = New-GlassTextBox -Text $Text -Location (New-Object System.Drawing.Point(28, ($yPos + 28))) -Size (New-Object System.Drawing.Size(508, 30))
-        $settingsCard.Controls.Add($box)
-
-        $button = New-FolderButton -Location (New-Object System.Drawing.Point(548, ($yPos + 27))) -ToolTipText $LabelText
-        $settingsCard.Controls.Add($button)
-
-        if ($Kind -eq "file") {
-            $localBox = $box
-            $button.Add_Click({
-                $fileDialog = New-Object System.Windows.Forms.OpenFileDialog
-                $fileDialog.Title = $LabelText
-                $fileDialog.Filter = "config.toml|config.toml|TOML files (*.toml)|*.toml|All files (*.*)|*.*"
-                $fileDialog.FileName = "config.toml"
-                if (-not [string]::IsNullOrWhiteSpace($localBox.Text)) {
-                    $folder = Split-Path -Parent $localBox.Text
-                    if (Test-Path -LiteralPath $folder) {
-                        $fileDialog.InitialDirectory = $folder
-                    }
-                }
-                if ($fileDialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
-                    $localBox.Text = $fileDialog.FileName
-                }
-                $fileDialog.Dispose()
-            }.GetNewClosure())
-        } else {
-            $localBox = $box
-            $button.Add_Click({ Select-FolderPath $localBox $LabelText $form }.GetNewClosure())
-        }
-
-        return $box
-    }
-
-    $officialSettingsText = Add-InlineSettingRow (U "OpenAI \u914d\u7f6e") $settings.officialConfigPath 88 "file"
-    $cpamcSettingsText = Add-InlineSettingRow (U "CPAMC \u914d\u7f6e") $settings.cpamcConfigPath 156 "file"
-    $codexHomeText = Add-InlineSettingRow (U "Codex \u6570\u636e") $settings.codexHome 224 "folder"
-    $backupRootText = Add-InlineSettingRow (U "\u5907\u4efd\u76ee\u5f55") $settings.backupRoot 292 "folder"
-
-    $saveSettingsButton = New-GlassButton -Text (U "\u4fdd\u5b58\u8bbe\u7f6e") -Location (New-Object System.Drawing.Point(28, 374)) -Size (New-Object System.Drawing.Size(154, 40)) -Kind "primary"
-    $settingsCard.Controls.Add($saveSettingsButton)
-
-    $toolTip = New-Object System.Windows.Forms.ToolTip
-    $toolTip.SetToolTip($officialPicker, (U "\u9009\u62e9 OpenAI \u914d\u7f6e\u6587\u4ef6"))
-    $toolTip.SetToolTip($cpamcPicker, (U "\u9009\u62e9 CPAMC \u914d\u7f6e\u6587\u4ef6"))
+    $operationButtons = @($backupButton, $restoreButton, $refreshButton, $simulateButton, $oauthButton, $cpamcButton, $saveSettingsButton, $openaiRow.Button, $cpamcRow.Button, $chatBackupSaveRow.Button, $restoreBackupPathRow.Button)
 
     function Save-UiSettings {
-        $settings.officialConfigPath = $officialText.Text.Trim()
-        $settings.cpamcConfigPath = $cpamcText.Text.Trim()
-        if ([string]::IsNullOrWhiteSpace($settings.codexHome)) {
-            $settings.codexHome = $Script:DefaultCodexHome
-        }
-        if ([string]::IsNullOrWhiteSpace($settings.backupRoot)) {
-            $settings.backupRoot = $Script:DefaultBackupRoot
-        }
+        $settings.officialConfigPath = $openaiRow.TextBox.Text.Trim()
+        $settings.cpamcConfigPath = $cpamcRow.TextBox.Text.Trim()
+        $settings.codexHome = $Script:DefaultCodexHome
+        if ([string]::IsNullOrWhiteSpace($settings.backupRoot)) { $settings.backupRoot = $Script:DefaultBackupRoot }
+        $settings.chatBackupDirectory = $chatBackupSaveRow.TextBox.Text.Trim()
+        $settings.chatRestoreBackupPath = $restoreBackupPathRow.TextBox.Text.Trim()
+        $settings.chatRestoreTargetPath = $Script:DefaultCodexHome
+        if ([string]::IsNullOrWhiteSpace($settings.chatBackupDirectory)) { $settings.chatBackupDirectory = Get-ChatHistoryBackupRootFromBackupRoot $settings.backupRoot }
+        $chatBackupSaveRow.TextBox.Text = $settings.chatBackupDirectory
         Save-SwitcherSettings $settings
-    }
-
-    function Sync-SettingsInputsToMode {
-        $officialText.Text = $settings.officialConfigPath
-        $cpamcText.Text = $settings.cpamcConfigPath
-        $officialSettingsText.Text = $settings.officialConfigPath
-        $cpamcSettingsText.Text = $settings.cpamcConfigPath
-        $codexHomeText.Text = $settings.codexHome
-        $backupRootText.Text = $settings.backupRoot
+        Ensure-SwitcherDirs (Get-AppRootFromBackupRoot $settings.backupRoot)
     }
 
     function Refresh-UiStatus {
-        Ensure-SwitcherDirs (Get-AppRootFromBackupRoot $settings.backupRoot)
         $readiness = Test-ToolReadiness -Settings $settings
         $provider = Get-CodexProvider $settings.codexHome
         $authMode = Get-CodexAuthMode $settings.codexHome
-        $configsOk = $readiness.OfficialConfigExists -and $readiness.CPAMCConfigExists
-        $backupsOk = $readiness.OfficialAuthSaved -or $readiness.CPAMCAuthSaved
-
-        Update-StatusBadge $modeBadge (Get-FriendlyModeName $provider) ($provider -ne "missing")
-        Update-StatusBadge $authBadge (Get-FriendlyAuthName $authMode) ($authMode -ne "missing" -and $authMode -ne "unknown")
-        Update-StatusBadge $configBadge ($(if ($configsOk) { (U "\u6b63\u5e38") } else { (U "\u9700\u68c0\u67e5") })) $configsOk
-        Update-StatusBadge $backupBadge ($(if ($backupsOk) { (U "\u5df2\u5f00\u542f") } else { (U "\u5f85\u751f\u6210") })) $true
-
-        Update-ConfigHealthDot $officialDot $readiness.OfficialConfigExists
-        Update-ConfigHealthDot $cpamcDot $readiness.CPAMCConfigExists
+        $modeValue.Text = Get-FriendlyModeName $provider
+        $authValue.Text = Get-FriendlyAuthName $authMode
+        $configValue.Text = $(if ($readiness.OfficialConfigExists -and $readiness.CPAMCConfigExists) { U "\u6b63\u5e38" } else { U "\u9700\u68c0\u67e5" })
     }
 
-    function Select-ConfigFile($textBox, $dialogTitle) {
-        $dialog = New-Object System.Windows.Forms.OpenFileDialog
-        $dialog.Title = $dialogTitle
-        $dialog.Filter = "config.toml|config.toml|TOML files (*.toml)|*.toml|All files (*.*)|*.*"
-        $dialog.FileName = "config.toml"
-        if (-not [string]::IsNullOrWhiteSpace($textBox.Text)) {
-            $folder = Split-Path -Parent $textBox.Text
-            if (Test-Path -LiteralPath $folder) {
-                $dialog.InitialDirectory = $folder
-            }
+    function Refresh-BackupList {
+        $backupList.Items.Clear()
+        $root = $chatBackupSaveRow.TextBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($root)) {
+            $root = Get-ChatHistoryBackupRootFromBackupRoot $settings.backupRoot
+            $chatBackupSaveRow.TextBox.Text = $root
         }
-        if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
-            $textBox.Text = $dialog.FileName
-            Save-UiSettings
-            Sync-SettingsInputsToMode
-            Refresh-UiStatus
-        }
-        $dialog.Dispose()
-    }
-
-    function Run-Switch($target) {
-        try {
-            Save-UiSettings
-            $form.UseWaitCursor = $true
-            $oauthButton.Enabled = $false
-            $cpamcButton.Enabled = $false
-            $result = Switch-CodexProfileMode `
-                -Target $target `
-                -CodexHome $settings.codexHome `
-                -OfficialConfigPath $officialText.Text.Trim() `
-                -CPAMCConfigPath $cpamcText.Text.Trim() `
-                -AppRoot (Get-AppRootFromBackupRoot $settings.backupRoot) `
-                -HistoryBackupRoot (Get-HistoryBackupRootFromBackupRoot $settings.backupRoot)
-            Refresh-UiStatus
-            [System.Windows.Forms.MessageBox]::Show((Format-SwitchResult $result), $Script:Title, "OK", "Information") | Out-Null
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, $Script:Title, "OK", "Warning") | Out-Null
-        } finally {
-            $oauthButton.Enabled = $true
-            $cpamcButton.Enabled = $true
-            $form.UseWaitCursor = $false
-        }
-    }
-
-    function Show-Page($Name) {
-        $modePage.Visible = ($Name -eq "mode")
-        $settingsPage.Visible = ($Name -eq "settings")
-        if ($Name -eq "mode") {
-            $pageTitle.Text = U "\u6a21\u5f0f\u5207\u6362"
-            $pageSubTitle.Text = U "\u4e00\u4e2a\u7a97\u53e3\u5b8c\u6210\u8d26\u53f7\u5207\u6362\u548c\u5386\u53f2\u8bb0\u5f55\u540c\u6b65"
-            $modeNav.BackColor = [System.Drawing.Color]::FromArgb(16, 185, 129)
-            $modeNav.FlatAppearance.BorderColor = $modeNav.BackColor
-            $settingsNav.BackColor = [System.Drawing.Color]::FromArgb(18, 30, 24)
-            $settingsNav.FlatAppearance.BorderColor = $settingsNav.BackColor
-            Refresh-UiStatus
-        } else {
-            $pageTitle.Text = U "\u8bbe\u7f6e"
-            $pageSubTitle.Text = U "\u7edf\u4e00\u7ba1\u7406\u914d\u7f6e\u6587\u4ef6\u3001Codex \u6570\u636e\u76ee\u5f55\u548c\u5907\u4efd\u76ee\u5f55"
-            $modeNav.BackColor = [System.Drawing.Color]::FromArgb(18, 30, 24)
-            $modeNav.FlatAppearance.BorderColor = $modeNav.BackColor
-            $settingsNav.BackColor = [System.Drawing.Color]::FromArgb(16, 185, 129)
-            $settingsNav.FlatAppearance.BorderColor = $settingsNav.BackColor
-            Sync-SettingsInputsToMode
-        }
-    }
-
-    $officialText.Add_Leave({ Save-UiSettings; Sync-SettingsInputsToMode; Refresh-UiStatus })
-    $cpamcText.Add_Leave({ Save-UiSettings; Sync-SettingsInputsToMode; Refresh-UiStatus })
-    $officialPicker.Add_Click({ Select-ConfigFile $officialText (U "\u9009\u62e9 OpenAI \u914d\u7f6e\u6587\u4ef6") })
-    $cpamcPicker.Add_Click({ Select-ConfigFile $cpamcText (U "\u9009\u62e9 CPAMC \u914d\u7f6e\u6587\u4ef6") })
-    $oauthButton.Add_Click({ Run-Switch "OAuth" })
-    $cpamcButton.Add_Click({ Run-Switch "CPAMC" })
-    $modeNav.Add_Click({ Show-Page "mode" })
-    $settingsNav.Add_Click({ Show-Page "settings" })
-    $saveSettingsButton.Add_Click({
-        if ([string]::IsNullOrWhiteSpace($backupRootText.Text)) {
-            [System.Windows.Forms.MessageBox]::Show((U "\u8bf7\u9009\u62e9\u5907\u4efd\u76ee\u5f55"), $Script:Title, "OK", "Warning") | Out-Null
+        if (-not (Test-Path -LiteralPath $root)) {
+            $summaryBox.Text = (U "\u5c1a\u672a\u627e\u5230\u5907\u4efd\u76ee\u5f55\uff1a") + [Environment]::NewLine + $root
             return
         }
-        $settings.officialConfigPath = $officialSettingsText.Text.Trim()
-        $settings.cpamcConfigPath = $cpamcSettingsText.Text.Trim()
-        $settings.codexHome = $codexHomeText.Text.Trim()
-        $settings.backupRoot = $backupRootText.Text.Trim()
-        Save-SwitcherSettings $settings
-        Sync-SettingsInputsToMode
-        Ensure-SwitcherDirs (Get-AppRootFromBackupRoot $settings.backupRoot)
-        Refresh-UiStatus
-        [System.Windows.Forms.MessageBox]::Show((U "\u8bbe\u7f6e\u5df2\u4fdd\u5b58"), $Script:Title, "OK", "Information") | Out-Null
-    })
-    $closeTopButton.Add_Click({ $form.Close() })
-    $minButton.Add_Click({ $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized })
+        foreach ($dir in Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending) {
+            $manifestPath = Join-Path $dir.FullName "manifest.json"
+            if (-not (Test-Path -LiteralPath $manifestPath)) { continue }
+            try {
+                $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                $item = New-Object System.Windows.Forms.ListViewItem($dir.Name)
+                [void]$item.SubItems.Add($dir.LastWriteTime.ToString("yyyy-MM-dd HH:mm"))
+                [void]$item.SubItems.Add(([string]@($manifest.entries).Count))
+                $item.Tag = $dir.FullName
+                [void]$backupList.Items.Add($item)
+            } catch {
+                Write-OCLog "Invalid backup manifest: $manifestPath" $_.Exception
+            }
+        }
+        if ($backupList.Items.Count -eq 0) {
+            $summaryBox.Text = U "\u6682\u65e0\u53ef\u7528\u5907\u4efd\u3002"
+        }
+    }
 
-    Sync-SettingsInputsToMode
-    Show-Page "mode"
+    function Update-BackupSummaryFromPath($Path) {
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            $summaryBox.Text = U "\u8bf7\u9009\u62e9\u8981\u6062\u590d\u7684\u5907\u4efd\u76ee\u5f55\u3002"
+            return
+        }
+        try {
+            $manifest = Get-CodexChatHistoryBackupManifest -BackupPath $Path
+            $summaryBox.Text = @(
+                (U "\u5907\u4efd\u76ee\u5f55\uff1a")
+                $Path
+                ""
+                ((U "\u521b\u5efa\u65f6\u95f4\uff1a") + " $($manifest.created_at)")
+                ((U "\u6765\u6e90\u76ee\u5f55\uff1a") + " $($manifest.source_codex_home)")
+                ((U "\u5305\u542b\u9879\u76ee\uff1a") + " $(@($manifest.entries).Count)")
+            ) -join [Environment]::NewLine
+        } catch {
+            $summaryBox.Text = $_.Exception.Message
+        }
+    }
+
+    function Update-BackupSummary {
+        if ($backupList.SelectedItems.Count -eq 0) {
+            $summaryBox.Text = U "\u8bf7\u5728\u5de6\u4fa7\u9009\u62e9\u4e00\u4e2a\u5907\u4efd\uff0c\u6216\u5728\u201c\u6062\u590d\u5907\u4efd\u6570\u636e\u4f4d\u7f6e\u201d\u4e2d\u9009\u62e9\u3002"
+            return
+        }
+        $path = [string]$backupList.SelectedItems[0].Tag
+        $restoreBackupPathRow.TextBox.Text = $path
+        Update-BackupSummaryFromPath $path
+    }
+
+    function Select-PathForRow($row) {
+        if ($row.Kind -eq "file") {
+            $dialog = New-Object System.Windows.Forms.OpenFileDialog
+            $dialog.Title = $row.Label.Text
+            $dialog.Filter = "config.toml|config.toml|TOML files (*.toml)|*.toml|All files (*.*)|*.*"
+            $dialog.FileName = "config.toml"
+            if (-not [string]::IsNullOrWhiteSpace($row.TextBox.Text)) {
+                $folder = Split-Path -Parent $row.TextBox.Text
+                if (Test-Path -LiteralPath $folder) { $dialog.InitialDirectory = $folder }
+            }
+            try {
+                if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) { $row.TextBox.Text = $dialog.FileName }
+            } finally { $dialog.Dispose() }
+        } else {
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = $row.Label.Text
+            $dialog.ShowNewFolderButton = $true
+            if (-not [string]::IsNullOrWhiteSpace($row.TextBox.Text) -and (Test-Path -LiteralPath $row.TextBox.Text)) { $dialog.SelectedPath = $row.TextBox.Text }
+            try {
+                if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) { $row.TextBox.Text = $dialog.SelectedPath }
+            } finally { $dialog.Dispose() }
+        }
+        Save-UiSettings
+        Refresh-UiStatus
+        Refresh-BackupList
+    }
+
+    function Get-SelectedBackupPath {
+        $typedPath = $restoreBackupPathRow.TextBox.Text.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($typedPath)) {
+            try {
+                [void](Get-CodexChatHistoryBackupManifest -BackupPath $typedPath)
+                return $typedPath
+            } catch {
+                Show-ClearMessage -Owner $form -Message ((U "\u6062\u590d\u5907\u4efd\u76ee\u5f55\u65e0\u6548\uff1a") + [Environment]::NewLine + $_.Exception.Message) -Error
+                return $null
+            }
+        }
+        if ($backupList.SelectedItems.Count -eq 0) {
+            Show-ClearMessage -Owner $form -Message (U "\u8bf7\u5148\u9009\u62e9\u201c\u6062\u590d\u5907\u4efd\u6570\u636e\u4f4d\u7f6e\u201d\uff0c\u6216\u5728\u5907\u4efd\u5217\u8868\u4e2d\u9009\u62e9\u4e00\u4e2a\u5907\u4efd\u3002") -Error
+            return $null
+        }
+        return [string]$backupList.SelectedItems[0].Tag
+    }
+
+    function Select-ChatRestoreBackupFolder {
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = U "\u9009\u62e9\u8981\u6062\u590d\u7684\u804a\u5929\u5907\u4efd\u76ee\u5f55"
+        $dialog.ShowNewFolderButton = $false
+        $seed = $restoreBackupPathRow.TextBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($seed)) { $seed = $chatBackupSaveRow.TextBox.Text.Trim() }
+        if (-not [string]::IsNullOrWhiteSpace($seed) -and (Test-Path -LiteralPath $seed)) { $dialog.SelectedPath = $seed }
+        try {
+            if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
+                $restoreBackupPathRow.TextBox.Text = $dialog.SelectedPath
+                Save-UiSettings
+                Update-BackupSummaryFromPath $dialog.SelectedPath
+                return $dialog.SelectedPath
+            }
+        } finally {
+            $dialog.Dispose()
+        }
+        return $null
+    }
+
+    $openaiRow.Button.Add_Click({ Select-PathForRow $openaiRow })
+    $cpamcRow.Button.Add_Click({ Select-PathForRow $cpamcRow })
+    $chatBackupSaveRow.Button.Add_Click({ Select-PathForRow $chatBackupSaveRow })
+    $restoreBackupPathRow.Button.Add_Click({ Select-ChatRestoreBackupFolder })
+    $backupList.Add_SelectedIndexChanged({ Update-BackupSummary })
+
+    $saveSettingsButton.Add_Click({
+        try {
+            Save-UiSettings
+            Refresh-UiStatus
+            Refresh-BackupList
+            Show-ClearMessage -Owner $form -Message (U "\u8bbe\u7f6e\u5df2\u4fdd\u5b58")
+        } catch {
+            Write-OCLog (U "\u4fdd\u5b58\u8bbe\u7f6e\u5931\u8d25") $_.Exception
+            Show-ClearMessage -Owner $form -Message $_.Exception.Message -Error
+        }
+    })
+
+    $refreshButton.Add_Click({ Refresh-BackupList; $statusLabel.Text = U "\u5c31\u7eea" })
+
+    $simulateButton.Add_Click({
+        $selected = Get-SelectedBackupPath
+        if (-not $selected) { return }
+        try {
+            $manifest = Get-CodexChatHistoryBackupManifest -BackupPath $selected
+            Show-ClearMessage -Owner $form -Message ((U "\u6a21\u62df\u6062\u590d\u901a\u8fc7\uff0c\u5c06\u6062\u590d\u9879\u76ee\uff1a") + " $(@($manifest.entries).Count)")
+        } catch {
+            Write-OCLog (U "\u6a21\u62df\u6062\u590d\u5931\u8d25") $_.Exception
+            Show-ClearMessage -Owner $form -Message $_.Exception.Message -Error
+        }
+    })
+
+    $backupButton.Add_Click({
+        try {
+            Save-UiSettings
+            $backupDirectory = $settings.chatBackupDirectory
+            if ([string]::IsNullOrWhiteSpace($backupDirectory)) {
+                Show-ClearMessage -Owner $form -Message (U "\u8bf7\u5148\u5728\u201c\u804a\u5929\u5907\u4efd\u4fdd\u5b58\u5230\u201d\u4e2d\u9009\u62e9\u4fdd\u5b58\u76ee\u5f55\u3002") -Error
+                return
+            }
+            Set-UiBusy -Controls $operationButtons -StatusLabel $statusLabel -Busy $true -Text (U "\u6b63\u5728\u5907\u4efd\u2026")
+            $form.UseWaitCursor = $true
+            [System.Windows.Forms.Application]::DoEvents()
+            Write-OCLog (U "\u6b63\u5728\u5907\u4efd\u2026")
+            $codexHome = $Script:DefaultCodexHome
+            $backupRoot = $settings.backupRoot
+            $result = New-CodexChatHistoryBackup -CodexHome $codexHome -BackupRoot $backupRoot -BackupDirectory $backupDirectory
+            $summaryBox.Text = Format-ChatHistoryBackupResult $result
+            Refresh-BackupList
+            Write-OCLog (U "\u804a\u5929\u8bb0\u5f55\u5907\u4efd\u5df2\u5b8c\u6210")
+            Show-ClearMessage -Owner $form -Message (U "\u804a\u5929\u8bb0\u5f55\u5907\u4efd\u5df2\u5b8c\u6210")
+        } catch {
+            Write-OCLog (U "\u804a\u5929\u8bb0\u5f55\u5907\u4efd\u5931\u8d25") $_.Exception
+            Show-ClearMessage -Owner $form -Message $_.Exception.Message -Error
+        } finally {
+            $form.UseWaitCursor = $false
+            Set-UiBusy -Controls $operationButtons -StatusLabel $statusLabel -Busy $false -Text (U "\u5c31\u7eea")
+        }
+    })
+
+    $restoreButton.Add_Click({
+        try {
+            Save-UiSettings
+            $backupPath = Get-SelectedBackupPath
+            if (-not $backupPath) { return }
+            $restoreTarget = $Script:DefaultCodexHome
+            if ([string]::IsNullOrWhiteSpace($restoreTarget)) { return }
+            $confirm = [System.Windows.Forms.MessageBox]::Show($form, ((U "\u6062\u590d\u4f1a\u66ff\u6362\u5f53\u524d\u7528\u6237 .codex \u91cc\u7684\u672c\u5730\u804a\u5929\u8bb0\u5f55\uff0c\u5e76\u5148\u521b\u5efa\u6062\u590d\u524d\u5907\u4efd\u3002\u7ee7\u7eed\uff1f") + [Environment]::NewLine + [Environment]::NewLine + $restoreTarget), $Script:Title, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            Set-UiBusy -Controls $operationButtons -StatusLabel $statusLabel -Busy $true -Text (U "\u6b63\u5728\u6062\u590d\u2026")
+            $form.UseWaitCursor = $true
+            [System.Windows.Forms.Application]::DoEvents()
+            Write-OCLog (U "\u6b63\u5728\u6062\u590d\u2026")
+            $backupRoot = $settings.backupRoot
+            $result = Restore-CodexChatHistoryBackup -BackupPath $backupPath -CodexHome $restoreTarget -BackupRoot $backupRoot
+            $summaryBox.Text = Format-ChatHistoryRestoreResult $result
+            Write-OCLog (U "\u804a\u5929\u8bb0\u5f55\u5df2\u6062\u590d")
+            Show-ClearMessage -Owner $form -Message (U "\u804a\u5929\u8bb0\u5f55\u5df2\u6062\u590d")
+        } catch {
+            Write-OCLog (U "\u804a\u5929\u8bb0\u5f55\u6062\u590d\u5931\u8d25") $_.Exception
+            Show-ClearMessage -Owner $form -Message $_.Exception.Message -Error
+        } finally {
+            $form.UseWaitCursor = $false
+            Set-UiBusy -Controls $operationButtons -StatusLabel $statusLabel -Busy $false -Text (U "\u5c31\u7eea")
+        }
+    })
+
+    $oauthButton.Add_Click({
+        try {
+            Save-UiSettings
+            Set-UiBusy -Controls $operationButtons -StatusLabel $statusLabel -Busy $true -Text (U "\u6b63\u5728\u5207\u6362\u81f3 OAuth\u2026")
+            $form.UseWaitCursor = $true
+            [System.Windows.Forms.Application]::DoEvents()
+            Write-OCLog (U "\u6b63\u5728\u5207\u6362\u81f3 OAuth\u2026")
+            $codexHome = $Script:DefaultCodexHome
+            $officialConfigPath = $settings.officialConfigPath
+            $cpamcConfigPath = $settings.cpamcConfigPath
+            $appRoot = Get-AppRootFromBackupRoot $settings.backupRoot
+            $historyRoot = Get-HistoryBackupRootFromBackupRoot $settings.backupRoot
+            $result = Switch-CodexProfileMode -Target OAuth -CodexHome $codexHome -OfficialConfigPath $officialConfigPath -CPAMCConfigPath $cpamcConfigPath -AppRoot $appRoot -HistoryBackupRoot $historyRoot
+            Refresh-UiStatus
+            $summaryBox.Text = Format-SwitchResult $result
+            Write-OCLog (U "\u5df2\u5207\u6362\u81f3 OAuth")
+            Show-ClearMessage -Owner $form -Message (U "\u5df2\u5207\u6362\u81f3 OAuth")
+        } catch {
+            Write-OCLog (U "\u5207\u6362\u81f3 OAuth \u5931\u8d25") $_.Exception
+            Show-ClearMessage -Owner $form -Message $_.Exception.Message -Error
+        } finally {
+            $form.UseWaitCursor = $false
+            Set-UiBusy -Controls $operationButtons -StatusLabel $statusLabel -Busy $false -Text (U "\u5c31\u7eea")
+        }
+    })
+
+    $cpamcButton.Add_Click({
+        try {
+            Save-UiSettings
+            Set-UiBusy -Controls $operationButtons -StatusLabel $statusLabel -Busy $true -Text (U "\u6b63\u5728\u5207\u6362\u81f3 API\u2026")
+            $form.UseWaitCursor = $true
+            [System.Windows.Forms.Application]::DoEvents()
+            Write-OCLog (U "\u6b63\u5728\u5207\u6362\u81f3 API\u2026")
+            $codexHome = $Script:DefaultCodexHome
+            $officialConfigPath = $settings.officialConfigPath
+            $cpamcConfigPath = $settings.cpamcConfigPath
+            $appRoot = Get-AppRootFromBackupRoot $settings.backupRoot
+            $historyRoot = Get-HistoryBackupRootFromBackupRoot $settings.backupRoot
+            $result = Switch-CodexProfileMode -Target CPAMC -CodexHome $codexHome -OfficialConfigPath $officialConfigPath -CPAMCConfigPath $cpamcConfigPath -AppRoot $appRoot -HistoryBackupRoot $historyRoot
+            Refresh-UiStatus
+            $summaryBox.Text = Format-SwitchResult $result
+            Write-OCLog ((U "\u5df2\u5207\u6362\u81f3") + " $(Get-FriendlyModeName $result.TargetProvider)")
+            Show-ClearMessage -Owner $form -Message ((U "\u5df2\u5207\u6362\u81f3") + " $(Get-FriendlyModeName $result.TargetProvider)")
+        } catch {
+            Write-OCLog (U "\u5207\u6362\u81f3 API \u5931\u8d25") $_.Exception
+            Show-ClearMessage -Owner $form -Message $_.Exception.Message -Error
+        } finally {
+            $form.UseWaitCursor = $false
+            Set-UiBusy -Controls $operationButtons -StatusLabel $statusLabel -Busy $false -Text (U "\u5c31\u7eea")
+        }
+    })
+
+    Refresh-UiStatus
+    Refresh-BackupList
     [void]$form.ShowDialog()
 }
 
 if (-not $NoUi) {
-    Show-UnifiedForm
+    try {
+        Show-UnifiedForm
+    } catch {
+        Write-OCLog "UI startup failed" $_.Exception
+        throw
+    }
 }

@@ -17,110 +17,115 @@ function Assert-Contains($needle, $label) {
     }
 }
 
-Assert-Contains "function Enable-GlassBackdrop" "glass backdrop helper"
-Assert-Contains "function New-GlassButton" "glass button helper"
-Assert-Contains "function New-GlassTextBox" "glass textbox helper"
-Assert-Contains "RoundedTextBoxControl" "rounded textbox native control"
-Assert-Contains "DrawPath" "rounded textbox/card border drawing"
-Assert-Contains "Rectangle(1, 1" "inset rounded card border"
-Assert-Contains "InnerTextBox" "rounded textbox inner textbox"
-Assert-Contains '[System.Windows.Forms.BorderStyle]::None' "filled borderless textbox"
-Assert-Contains "[System.Drawing.Color]::FromArgb(25, 39, 31)" "filled textbox surface"
-Assert-Contains "function New-FolderButton" "folder picker button helper"
-Assert-Contains "function New-SidebarButton" "sidebar button helper"
-Assert-Contains "function Add-SubtleCardBorder" "subtle card border helper"
-Assert-Contains "function Show-Page" "page switching helper"
-Assert-Contains "function Select-ConfigFile" "config file picker"
-Assert-Contains "function Get-DefaultSettingsPath" "app settings path helper"
-Assert-Contains "function Get-AppRootFromBackupRoot" "app root from backup root helper"
-Assert-Contains "function Get-HistoryBackupRootFromBackupRoot" "history root from backup root helper"
-Assert-Contains "function Show-SettingsDialog" "settings dialog helper"
-Assert-Contains "function Select-FolderPath" "folder picker helper"
-Assert-Contains "backupRoot" "custom backup root setting"
-Assert-Contains "AppData" "settings stored outside backup root"
-Assert-Contains '$Script:DefaultBackupRoot = "D:\codex-back"' "D drive backup root"
-Assert-Contains 'Join-Path $Script:DefaultBackupRoot "codex-switch"' "D drive app backup root"
-Assert-Contains 'Join-Path $Script:DefaultBackupRoot "history-sync"' "D drive history backup root"
-Assert-Contains "function Get-FriendlyModeName" "friendly mode name helper"
-Assert-Contains "function Get-FriendlyAuthName" "friendly auth name helper"
-Assert-Contains "function New-StatusBadge" "status badge helper"
-Assert-Contains "function Update-StatusBadge" "status badge updater"
-Assert-Contains "function New-ConfigHealthDot" "config health dot helper"
-Assert-Contains "function Update-ConfigHealthDot" "config health dot updater"
-Assert-Contains "RefinedUiV3" "refined UI v3 marker"
-Assert-Contains "AcrylicSidebarUiV1" "acrylic sidebar UI marker"
-Assert-Contains "SolidDashboardUiV1" "solid dashboard UI marker"
-Assert-Contains "SettingsPanelInspiredUiV1" "settings panel inspired UI marker"
-Assert-Contains "NetcattyCardUiV1" "netcatty card UI marker"
-Assert-Contains "AcrylicBackplateUiV1" "acrylic backplate UI marker"
-Assert-Contains 'FormBorderStyle = "None"' "borderless glass shell"
-Assert-Contains '$form.Opacity = 1.0' "fully opaque form"
-Assert-Contains "Enable-GlassBackdrop `$form" "enabled acrylic backplate"
-Assert-Contains "Color]::Transparent" "transparent content over acrylic backplate"
-Assert-Contains "Set-RoundedRegion `$form 10" "restrained rounded main window"
-Assert-Contains "Set-RoundedRegion `$panel 10" "restrained rounded cards"
-Assert-Contains "Set-RoundedRegion `$button 8" "restrained rounded buttons"
-Assert-Contains "Set-RoundedRegion `$panel 8" "soft rounded status badges"
-Assert-Contains "[System.Drawing.Color]::FromArgb(38, 45, 42)" "acrylic backplate shell"
-Assert-Contains "[System.Drawing.Color]::FromArgb(22, 34, 27)" "solid dashboard card surface"
-Assert-Contains "[System.Drawing.Color]::FromArgb(151, 169, 160)" "muted green-gray text"
-Assert-Contains "[System.Drawing.Color]::FromArgb(16, 185, 129)" "calm green primary action"
-Assert-Contains "[System.Drawing.Color]::FromArgb(217, 119, 6)" "calm amber CPAMC action"
-Assert-Contains "[System.Drawing.Color]::FromArgb(12, 24, 18)" "reference green-black sidebar"
-Assert-Contains "[System.Drawing.Color]::FromArgb(22, 34, 27)" "reference card surface"
-Assert-Contains "[System.Drawing.Color]::FromArgb(82, 255, 157)" "reference green label"
-Assert-Contains "System.Drawing.Size(980, 600)" "netcatty compact window size"
-Assert-Contains "System.Drawing.Size(220, 600)" "netcatty sidebar size"
-Assert-Contains "System.Drawing.Point(220, 0)" "netcatty content root position"
-Assert-Contains "System.Drawing.Size(760, 600)" "netcatty content root size"
-Assert-Contains "System.Drawing.Size(508, 30)" "natural config input width"
-Assert-Contains "System.Drawing.Point(56, 44)" "natural mode card position"
-Assert-Contains "System.Drawing.Size(640, 320)" "natural mode card size"
-Assert-Contains "System.Drawing.Point(102, 252)" "centered OAuth switch button"
-Assert-Contains "System.Drawing.Point(298, 252)" "centered CPAMC switch button"
-Assert-Contains "System.Drawing.Point(56, 398)" "natural status card position"
-Assert-Contains "System.Drawing.Size(640, 112)" "natural status card size"
-Assert-Contains "System.Drawing.Size(42, 32)" "softer picker button size"
-Assert-Contains '(0 - $form.Left)' "drag offset form left compatibility"
-Assert-Contains '(0 - $script:dragOffset.X)' "drag offset x compatibility"
-Assert-Contains '$brand = New-GlassLabel -Text "O-C"' "top-left O-C brand label"
-Assert-Contains "\u5207\u6362\u81f3OAuth" "OAuth button label"
-Assert-Contains "\u5207\u6362\u81f3CPAMC" "CPAMC button label"
-Assert-Contains "\u6a21\u5f0f\u5207\u6362" "sidebar mode switch label"
-Assert-Contains "\u8bbe\u7f6e" "settings button label"
-Assert-Contains '$button.FlatAppearance.BorderSize = 0' "filled sidebar button without hard border"
-Assert-Contains "settingsPage" "inline settings page"
-Assert-Contains "modePage" "inline mode page"
-Assert-Contains "\u5907\u4efd\u76ee\u5f55" "backup directory setting label"
-Assert-Contains "FolderBrowserDialog" "folder picker dialog"
-Assert-Contains "\u5f53\u524d\u6a21\u5f0f" "current mode badge label"
-Assert-Contains "\u767b\u5f55\u65b9\u5f0f" "auth mode badge label"
-Assert-Contains "\u914d\u7f6e\u6587\u4ef6" "config health badge label"
-Assert-Contains "\u5b89\u5168\u5907\u4efd" "safety backup badge label"
-Assert-Contains "\u5df2\u5207\u6362\u81f3" "friendly switch success message"
-Assert-Contains "\u5386\u53f2\u8bb0\u5f55\u5df2\u540c\u6b65" "friendly history sync message"
-Assert-Contains "\u9009\u62e9 OpenAI \u914d\u7f6e\u6587\u4ef6" "OpenAI folder button tooltip"
-Assert-Contains "\u9009\u62e9 CPAMC \u914d\u7f6e\u6587\u4ef6" "CPAMC folder button tooltip"
-Assert-Contains "OpenFileDialog" "file picker dialog"
-Assert-Contains "Invoke-HistoryProviderSync -TargetProvider `$currentProvider" "pre-switch provider sync"
-Assert-Contains "Invoke-HistoryProviderSync -TargetProvider `$targetProvider" "post-switch provider sync"
-
-foreach ($forbidden in @(
-    "\u6253\u5f00Provider Sync",
-    "\u4fee\u590d\u5f53\u524d\u8bb0\u5f55",
-    "\u5237\u65b0\u72b6\u6001",
-    '$form.Opacity = 0.97',
-    "[System.Windows.Forms.BorderStyle]::FixedSingle",
-    "officialBrowse",
-    "cpamcBrowse",
-    "repairCurrentButton",
-    "refreshButton",
-    "closeButton = New-GlassButton",
-    '$brand = New-GlassLabel -Text "C-O"'
-)) {
-    if ($source.Contains($forbidden)) {
-        throw "Integrated UI must not expose forbidden control: $forbidden"
+function Assert-Before($first, $second, $label) {
+    $firstIndex = $source.IndexOf($first)
+    $secondIndex = $source.IndexOf($second)
+    if ($firstIndex -lt 0 -or $secondIndex -lt 0 -or $firstIndex -gt $secondIndex) {
+        throw "Expected order for ${label}: $first before $second"
     }
 }
 
-Write-Host "Codex unified switcher UI checks passed."
+Assert-Contains "function Get-DefaultSettingsPath" "app settings path helper"
+Assert-Contains "function Get-AppRootFromBackupRoot" "app root from backup root helper"
+Assert-Contains "function Get-HistoryBackupRootFromBackupRoot" "history root from backup root helper"
+Assert-Contains "function Get-ChatHistoryBackupRootFromBackupRoot" "chat history backup root helper"
+Assert-Contains "function New-CodexChatHistoryBackup" "chat history backup helper"
+Assert-Contains "function Restore-CodexChatHistoryBackup" "chat history restore helper"
+Assert-Contains "function Select-ChatRestoreBackupFolder" "chat restore backup picker"
+Assert-Contains "function Write-OCLog" "log writer helper"
+Assert-Contains "function Set-UiBusy" "busy state helper"
+Assert-Contains "function Refresh-BackupList" "backup list refresh helper"
+Assert-Contains "function Update-BackupSummary" "backup summary helper"
+Assert-Contains "function Show-ClearMessage" "clear message box helper"
+Assert-Contains "function New-NativeSection" "native section helper"
+Assert-Contains "function Add-PathRow" "native path row helper"
+Assert-Contains "function Add-StatusRow" "status row helper"
+
+Assert-Contains "NativeBackupUiV1" "native backup UI marker"
+Assert-Contains "FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle" "normal fixed Windows frame"
+Assert-Contains "[System.Drawing.Color]::FromArgb(245, 247, 250)" "light gray window background"
+Assert-Contains "[System.Drawing.Color]::FromArgb(16, 94, 72)" "deep green primary button"
+Assert-Contains "[System.Drawing.Color]::FromArgb(17, 24, 39)" "clear dark title color"
+Assert-Contains "StatusStrip" "bottom status strip"
+Assert-Contains "ToolStripStatusLabel" "bottom status text"
+Assert-Contains "ListView" "backup list"
+Assert-Contains "Details" "details list view mode"
+Assert-Contains "System.Drawing.Size(980, 700)" "native tool window size"
+
+Assert-Contains "\u004f\u002d\u0043 \u0043\u006f\u0064\u0065\u0078 \u5de5\u5177\u7bb1" "main title text"
+Assert-Contains "\u5907\u4efd\u548c\u6062\u590d\u5f53\u524d\u7528\u6237 .codex \u804a\u5929\u6570\u636e\uff0c\u914d\u7f6e\u5207\u6362\u4fdd\u6301\u7b80\u5355\u3002" "subtitle text"
+Assert-Contains "\u004f\u0070\u0065\u006e\u0041\u0049 \u914d\u7f6e" "OpenAI config row label"
+Assert-Contains "\u0041\u0050\u0049 \u914d\u7f6e" "API config row label"
+Assert-Contains "\u804a\u5929\u8bb0\u5f55\u8def\u5f84" "chat history paths section"
+Assert-Contains "\u804a\u5929\u5907\u4efd\u4fdd\u5b58\u5230" "chat backup save path row label"
+Assert-Contains "\u6062\u590d\u5907\u4efd\u6570\u636e\u4f4d\u7f6e" "restore backup data path row label"
+Assert-Contains "\u9ed8\u8ba4\u8bfb\u53d6\u5e76\u6062\u590d\u5230\u5f53\u524d\u7528\u6237 .codex" "default codex home explanation"
+Assert-Contains "\u9009\u62e9" "select button text"
+Assert-Contains "\u5f00\u59cb\u5907\u4efd" "start backup button text"
+Assert-Contains "\u6062\u590d\u9009\u4e2d\u7684\u5907\u4efd" "restore selected backup button text"
+Assert-Contains "\u5237\u65b0\u5217\u8868" "refresh list button text"
+Assert-Contains "\u6a21\u62df\u6062\u590d" "simulate restore button text"
+Assert-Contains "\u5207\u6362\u81f3 OAuth" "OAuth switch text"
+Assert-Contains "\u5207\u6362\u81f3 API" "API switch text"
+Assert-Contains "\u5907\u4efd\u5217\u8868" "backup list title"
+Assert-Contains "\u5907\u4efd\u6458\u8981" "backup summary title"
+Assert-Contains "\u5c31\u7eea" "ready status"
+Assert-Contains "\u6b63\u5728\u5907\u4efd" "backup progress status"
+Assert-Contains "\u6b63\u5728\u6062\u590d" "restore progress status"
+Assert-Contains "\u64cd\u4f5c\u5b8c\u6210" "success message text"
+Assert-Contains "\u64cd\u4f5c\u5931\u8d25" "failure message text"
+
+Assert-Contains "Write-OCLog" "operation logging"
+Assert-Contains '[System.Windows.Forms.MessageBox]::Show([string]$Message, $title' "old-style direct message box"
+
+Assert-Contains "Invoke-HistoryProviderSync -TargetProvider `$currentProvider" "pre-switch provider sync"
+Assert-Contains "Invoke-HistoryProviderSync -TargetProvider `$targetProvider" "post-switch provider sync"
+Assert-Contains "New-CodexChatHistoryBackup -CodexHome `$codexHome -BackupRoot `$backupRoot -BackupDirectory `$backupDirectory" "chat backup uses selected save path synchronously"
+Assert-Contains "Restore-CodexChatHistoryBackup -BackupPath `$backupPath -CodexHome `$restoreTarget -BackupRoot `$backupRoot" "chat restore uses selected source and target paths synchronously"
+Assert-Contains '$codexHome = $Script:DefaultCodexHome' "chat backup defaults to current user codex data"
+Assert-Contains '$restoreTarget = $Script:DefaultCodexHome' "chat restore defaults to current user codex data"
+Assert-Contains "Format-ChatHistoryBackupResult `$result" "chat backup formats result directly"
+Assert-Contains "Show-ClearMessage -Owner `$form -Message (U `"\u804a\u5929\u8bb0\u5f55\u5907\u4efd\u5df2\u5b8c\u6210`")" "chat backup direct completion popup"
+Assert-Contains "Show-ClearMessage -Owner `$form -Message (U `"\u804a\u5929\u8bb0\u5f55\u5df2\u6062\u590d`")" "chat restore direct completion popup"
+Assert-Contains "Switch-CodexProfileMode -Target OAuth -CodexHome `$codexHome -OfficialConfigPath `$officialConfigPath -CPAMCConfigPath `$cpamcConfigPath -AppRoot `$appRoot -HistoryBackupRoot `$historyRoot" "OAuth switch runs synchronously"
+Assert-Contains "Switch-CodexProfileMode -Target CPAMC -CodexHome `$codexHome -OfficialConfigPath `$officialConfigPath -CPAMCConfigPath `$cpamcConfigPath -AppRoot `$appRoot -HistoryBackupRoot `$historyRoot" "CPAMC switch runs synchronously"
+Assert-Contains "Format-SwitchResult `$result" "mode switch formats result directly"
+Assert-Contains "Show-ClearMessage -Owner `$form -Message (U `"\u5df2\u5207\u6362\u81f3 OAuth`")" "OAuth direct completion popup"
+Assert-Contains "Show-ClearMessage -Owner `$form -Message ((U `"\u5df2\u5207\u6362\u81f3`") + `" `$(Get-FriendlyModeName `$result.TargetProvider)`")" "API direct completion popup"
+
+foreach ($forbidden in @(
+    'FormBorderStyle = "None"',
+    "Enable-GlassBackdrop `$form",
+    "Set-RoundedRegion `$form",
+    "AcrylicSidebarUiV1",
+    "AcrylicBackplateUiV1",
+    "New-GlassPanel",
+    "New-GlassButton",
+    "New-GlassTextBox",
+    "New-SidebarButton",
+    "RoundedTextBoxControl",
+    "function Select-ChatHistoryBackupDestinationFolder",
+    "function Select-ChatHistoryRestoreTargetFolder",
+    "BeginInvoke",
+    "Start-Job",
+    "Wait-Job",
+    "Receive-Job",
+    "Run-UiOperation",
+    "Receive-Job -Job `$job -ErrorAction Stop",
+    '$codexRow = Add-PathRow',
+    '$backupRootRow = Add-PathRow',
+    '$restoreTargetRow = Add-PathRow',
+    "\u0043\u006f\u0064\u0065\u0078 \u6570\u636e\u76ee\u5f55",
+    "\u5207\u6362\u5907\u4efd\u76ee\u5f55",
+    "\u6062\u590d\u5230 Codex \u6570\u636e\u76ee\u5f55",
+    "\u9009\u62e9\u5907\u4efd\u4fdd\u5b58\u4f4d\u7f6e",
+    "[System.Drawing.Color]::FromArgb(12, 24, 18)",
+    "[System.Drawing.Color]::FromArgb(22, 34, 27)",
+    '$brand = New-GlassLabel -Text "C-O"'
+)) {
+    if ($source.Contains($forbidden)) {
+        throw "Native UI should no longer contain old glass shell marker: $forbidden"
+    }
+}
+
+Write-Host "Codex unified switcher native UI checks passed."

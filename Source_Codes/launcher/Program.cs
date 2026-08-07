@@ -16,6 +16,7 @@ namespace O_C_Launcher
             try
             {
                 string scriptPath = FindSwitcherScript();
+                WriteLauncherLog("Launching PowerShell UI: " + scriptPath);
                 string powershellPath = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.Windows),
                     "System32",
@@ -40,11 +41,37 @@ namespace O_C_Launcher
             }
             catch (Exception ex)
             {
+                WriteLauncherLog("Launcher failed: " + ex);
                 MessageBox.Show(
                     ex.Message,
                     "O-C",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
+            }
+        }
+
+        private static void WriteLauncherLog(string message)
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                if (string.IsNullOrWhiteSpace(appData))
+                {
+                    appData = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        "AppData",
+                        "Roaming");
+                }
+
+                string logDir = Path.Combine(appData, "C-O", "logs");
+                Directory.CreateDirectory(logDir);
+                string logPath = Path.Combine(logDir, "launcher.log");
+                File.AppendAllText(
+                    logPath,
+                    "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " + message + Environment.NewLine);
+            }
+            catch
+            {
             }
         }
 

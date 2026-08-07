@@ -47,6 +47,8 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "README.md") -Destination (Join-Path
 Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $packageDir "LICENSE") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "Run-O-C.vbs") -Destination (Join-Path $packageDir "Run-O-C.vbs") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "Create-O-C-Shortcut.bat") -Destination (Join-Path $packageDir "Create-O-C-Shortcut.bat") -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "Debug-O-C.bat") -Destination (Join-Path $packageDir "Debug-O-C.bat") -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "O-C-Menu.bat") -Destination (Join-Path $packageDir "O-C-Menu.bat") -Force
 
 Copy-Item -LiteralPath (Join-Path $repoRoot "picture") -Destination (Join-Path $packageDir "picture") -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $packageDir "Source_Codes\tools") | Out-Null

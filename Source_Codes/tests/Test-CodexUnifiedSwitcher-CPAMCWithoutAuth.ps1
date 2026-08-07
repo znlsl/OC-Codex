@@ -25,6 +25,7 @@ model_provider = "CPA"
 
 [model_providers.CPA]
 name = "CPA"
+api_key = "cpamc-config-key"
 "@
 Set-Content -LiteralPath (Join-Path $codexHome "config.toml") -Encoding UTF8 -Value (Get-Content -LiteralPath $officialConfig -Raw)
 Set-Content -LiteralPath (Join-Path $codexHome "auth.json") -Encoding UTF8 -Value '{"auth_mode":"chatgpt"}'
@@ -55,11 +56,12 @@ try {
     if ((Get-CodexProvider -CodexHome $codexHome) -ne "CPA") {
         throw "Expected config provider CPA after CPAMC switch"
     }
-    if (Test-Path -LiteralPath (Join-Path $codexHome "auth.json")) {
-        throw "Expected OAuth auth.json to be moved aside when no CPAMC auth profile exists"
+    $cpamcAuth = Get-Content -LiteralPath (Join-Path $codexHome "auth.json") -Raw | ConvertFrom-Json
+    if ($cpamcAuth.auth_mode -ne "apikey") {
+        throw "Expected generated CPAMC apikey auth"
     }
-    if ((Get-ChildItem -LiteralPath $codexHome -Filter "auth.json.oauth-before-cpamc-*" -ErrorAction SilentlyContinue).Count -lt 1) {
-        throw "Expected OAuth auth move-aside file before CPAMC"
+    if ($cpamcAuth.OPENAI_API_KEY -ne "cpamc-config-key") {
+        throw "Expected generated CPAMC auth key to come from config.toml"
     }
     if ((Get-Content -LiteralPath $rolloutPath -Raw) -notmatch '"model_provider"\s*:\s*"CPA"') {
         throw "Expected rollout provider CPA after CPAMC switch"
