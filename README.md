@@ -401,3 +401,15 @@ Codex 运行时可能正在占用 SQLite、WAL、SHM 或会话文件。关闭 Co
 ## License
 
 以仓库中的 `LICENSE` 文件为准。
+
+---
+
+## ⭐ Star History
+
+<a href="https://star-history.com/#angusdevgo/OC-Codex&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=angusdevgo/OC-Codex&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=angusdevgo/OC-Codex&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=angusdevgo/OC-Codex&type=Date" />
+ </picture>
+</a>
